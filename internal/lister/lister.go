@@ -3,8 +3,6 @@ package lister
 import (
 	"bufio"
 	"bytes"
-	"compress/bzip2"
-	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
@@ -50,27 +48,20 @@ func List(ctx context.Context, path string, opts Options) ([]Entry, error) {
 		}
 		return ListISO(file, st.Size(), opts)
 	}
-	if isZip(head) {
-		return listZip(path)
-	}
 	if isRPM(head) {
-		return listRPM(ctx, path)
+		return listRPM(ctx, path, opts)
 	}
-	if isGzip(head) {
-		return listCompressedTarOrSingle(file, "gzip", func(r io.Reader) (io.Reader, error) {
-			return gzip.NewReader(r)
-		})
-	}
-	if isBzip2(head) {
-		return listCompressedTarOrSingle(file, "bzip2", func(r io.Reader) (io.Reader, error) {
-			return bzip2.NewReader(r), nil
-		})
-	}
-	if isTar(head) {
-		return listTar(file, "tar")
-	}
-	if isCPIONewc(head) {
-		return ListCPIONewc(file, "cpio")
+	if isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isTar(head) || isCPIONewc(head) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		entries, err := listArchiveBytes(data, nestedDepth(opts))
+		if err != nil {
+			return nil, err
+		}
+		sortEntries(entries)
+		return entries, nil
 	}
 
 	return listWithFallback(ctx, path)
@@ -172,6 +163,14 @@ func isGzip(b []byte) bool {
 
 func isBzip2(b []byte) bool {
 	return len(b) >= 3 && string(b[:3]) == "BZh"
+}
+
+func isXZ(b []byte) bool {
+	return len(b) >= 6 && bytes.Equal(b[:6], []byte{0xfd, '7', 'z', 'X', 'Z', 0x00})
+}
+
+func isZstd(b []byte) bool {
+	return len(b) >= 4 && b[0] == 0x28 && b[1] == 0xb5 && b[2] == 0x2f && b[3] == 0xfd
 }
 
 func isTar(b []byte) bool {

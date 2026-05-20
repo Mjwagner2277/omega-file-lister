@@ -11,10 +11,10 @@ paths.
 ## Supported inputs
 
 - ISO-9660 images, including basic Rock Ridge names
-- Nested compressed/archive files inside ISO images
-- tar, tar.gz, tar.bz2, tgz, tbz2
+- Recursive compressed/archive expansion for supported formats, including nested files inside ISO images
+- tar, tar.gz, tar.bz2, tar.xz, tar.zst, tgz, tbz2, txz, tzst
 - zip, jar, war
-- gzip and bzip2 single-file streams
+- gzip, bzip2, xz, and zstd single-file streams
 - cpio `newc` archives
 - rpm packages with supported payload compressors
 - fallback listing through installed tools: `bsdtar`, `tar`, `7z`, `unrar`,
@@ -38,7 +38,9 @@ flowchart TD
 ```
 
 The scanner does not read the whole ISO image. It reads directory extents plus
-file extents whose names indicate supported compressed content, then uses format signatures while expanding nested payloads.
+file extents whose names indicate supported compressed content, then uses format
+signatures while expanding nested payloads. xz and zstd recursion require the
+corresponding Linux helper command to be installed.
 
 ## Build
 
@@ -63,4 +65,5 @@ dists/TRIXIE/MAIN/BINARY_A/Packages.gz!content	# decompressed single-file stream
 ```
 
 JSON output emits records with path, type, size, source format, and optional
-comment.
+comment. A full Debian netinst ISO example is checked in at
+`examples/debian-iso-output.txt`.

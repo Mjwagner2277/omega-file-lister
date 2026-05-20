@@ -8,6 +8,7 @@ import (
 	"compress/bzip2"
 	"compress/gzip"
 	"io"
+	"os/exec"
 	"strings"
 )
 
@@ -21,16 +22,13 @@ func nestedDepth(opts Options) int {
 }
 
 func isNestedCandidate(name string, size uint32) bool {
-	if size == 0 {
-		return false
-	}
-	return hasArchiveSuffix(name)
+	return size > 0 && hasArchiveSuffix(name)
 }
 
 func hasArchiveSuffix(name string) bool {
 	lower := strings.ToLower(name)
 	for _, suffix := range []string{
-		".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".zip", ".jar", ".war", ".cpio", ".cpio.gz", ".gz", ".bz2",
+		".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar.zst", ".tzst", ".zip", ".jar", ".war", ".cpio", ".cpio.gz", ".cpio.xz", ".cpio.zst", ".gz", ".bz2", ".xz", ".zst",
 	} {
 		if strings.HasSuffix(lower, suffix) {
 			return true
@@ -39,7 +37,15 @@ func hasArchiveSuffix(name string) bool {
 	return false
 }
 
+func listArchiveBytes(data []byte, depth int) ([]Entry, error) {
+	return listArchivePayload("", data, depth)
+}
+
 func listNestedArchiveBytes(parent string, data []byte, depth int) ([]Entry, error) {
+	return listArchivePayload(parent, data, depth)
+}
+
+func listArchivePayload(parent string, data []byte, depth int) ([]Entry, error) {
 	if depth <= 0 || len(data) == 0 {
 		return nil, nil
 	}
@@ -50,29 +56,29 @@ func listNestedArchiveBytes(parent string, data []byte, depth int) ([]Entry, err
 
 	switch {
 	case isZip(head):
-		return listNestedZip(parent, data, depth)
+		return listZipPayload(parent, data, depth)
 	case isGzip(head):
-		return listNestedCompressed(parent, data, depth, "gzip", func(r io.Reader) (io.Reader, error) {
+		return listCompressedPayload(parent, data, depth, "gzip", func(r io.Reader) (io.Reader, error) {
 			return gzip.NewReader(r)
 		})
 	case isBzip2(head):
-		return listNestedCompressed(parent, data, depth, "bzip2", func(r io.Reader) (io.Reader, error) {
+		return listCompressedPayload(parent, data, depth, "bzip2", func(r io.Reader) (io.Reader, error) {
 			return bzip2.NewReader(r), nil
 		})
+	case isXZ(head):
+		return listExternalCompressedPayload(parent, data, depth, "xz", "xz", "-dc")
+	case isZstd(head):
+		return listExternalCompressedPayload(parent, data, depth, "zstd", "zstd", "-dc")
 	case isTar(head):
-		return listNestedTar(parent, data, depth, "tar")
+		return listTarPayload(parent, tar.NewReader(bytes.NewReader(data)), depth, "tar")
 	case isCPIONewc(head):
-		entries, err := ListCPIONewc(bytes.NewReader(data), "cpio")
-		if err != nil {
-			return nil, err
-		}
-		return prefixNestedEntries(parent, entries, "expanded cpio archive"), nil
+		return listCPIOPayload(parent, bytes.NewReader(data), depth, "cpio")
 	default:
 		return nil, nil
 	}
 }
 
-func listNestedZip(parent string, data []byte, depth int) ([]Entry, error) {
+func listZipPayload(parent string, data []byte, depth int) ([]Entry, error) {
 	zr, err := zip.NewReader(bytes.NewReader(data), int64(len(data)))
 	if err != nil {
 		return nil, err
@@ -83,8 +89,8 @@ func listNestedZip(parent string, data []byte, depth int) ([]Entry, error) {
 		if f.FileInfo().IsDir() {
 			typ = "dir"
 		}
-		child := Entry{Path: parent + "!" + f.Name, Type: typ, Size: int64(f.UncompressedSize64), Format: "zip", Comment: "inside compressed file " + parent}
-		entries = append(entries, child)
+		childPath := nestedPath(parent, f.Name)
+		entries = append(entries, Entry{Path: childPath, Type: typ, Size: int64(f.UncompressedSize64), Format: "zip", Comment: archiveComment(parent, "zip")})
 		if typ != "file" || !hasArchiveSuffix(f.Name) {
 			continue
 		}
@@ -100,7 +106,7 @@ func listNestedZip(parent string, data []byte, depth int) ([]Entry, error) {
 		if closeErr != nil {
 			return nil, closeErr
 		}
-		nested, err := listNestedArchiveBytes(child.Path, payload, depth-1)
+		nested, err := listArchivePayload(childPath, payload, depth-1)
 		if err != nil {
 			return nil, err
 		}
@@ -110,11 +116,7 @@ func listNestedZip(parent string, data []byte, depth int) ([]Entry, error) {
 	return entries, nil
 }
 
-func listNestedTar(parent string, data []byte, depth int, format string) ([]Entry, error) {
-	return listNestedTarReader(parent, tar.NewReader(bytes.NewReader(data)), depth, format)
-}
-
-func listNestedTarReader(parent string, tr *tar.Reader, depth int, format string) ([]Entry, error) {
+func listTarPayload(parent string, tr *tar.Reader, depth int, format string) ([]Entry, error) {
 	var entries []Entry
 	for {
 		h, err := tr.Next()
@@ -135,8 +137,8 @@ func listNestedTarReader(parent string, tr *tar.Reader, depth int, format string
 		if name == "" {
 			continue
 		}
-		child := Entry{Path: parent + "!" + name, Type: typ, Size: h.Size, Format: format, Comment: "inside compressed file " + parent}
-		entries = append(entries, child)
+		childPath := nestedPath(parent, name)
+		entries = append(entries, Entry{Path: childPath, Type: typ, Size: h.Size, Format: format, Comment: archiveComment(parent, format)})
 		if typ != "file" || !hasArchiveSuffix(name) {
 			continue
 		}
@@ -144,7 +146,7 @@ func listNestedTarReader(parent string, tr *tar.Reader, depth int, format string
 		if err != nil {
 			return nil, err
 		}
-		nested, err := listNestedArchiveBytes(child.Path, payload, depth-1)
+		nested, err := listArchivePayload(childPath, payload, depth-1)
 		if err != nil {
 			return nil, err
 		}
@@ -154,7 +156,7 @@ func listNestedTarReader(parent string, tr *tar.Reader, depth int, format string
 	return entries, nil
 }
 
-func listNestedCompressed(parent string, data []byte, depth int, format string, open func(io.Reader) (io.Reader, error)) ([]Entry, error) {
+func listCompressedPayload(parent string, data []byte, depth int, format string, open func(io.Reader) (io.Reader, error)) ([]Entry, error) {
 	cr, err := open(bytes.NewReader(data))
 	if err != nil {
 		return nil, err
@@ -163,24 +165,20 @@ func listNestedCompressed(parent string, data []byte, depth int, format string, 
 	peek, _ := br.Peek(512)
 
 	if isTar(peek) {
-		return listNestedTarReader(parent, tar.NewReader(br), depth, format+".tar")
+		return listTarPayload(parent, tar.NewReader(br), depth, format+".tar")
 	}
 	if isCPIONewc(peek) {
-		entries, err := ListCPIONewc(br, format+".cpio")
-		if err != nil {
-			return nil, err
-		}
-		return prefixNestedEntries(parent, entries, "expanded "+format+" cpio archive"), nil
+		return listCPIOPayload(parent, br, depth, format+".cpio")
 	}
 
-	child := parent + "!content"
+	childPath := nestedPath(parent, "content")
 	if hasArchiveMagic(peek) {
 		payload, err := io.ReadAll(br)
 		if err != nil {
 			return nil, err
 		}
-		entries := []Entry{{Path: child, Type: "file", Size: int64(len(payload)), Format: format, Comment: "decompressed single-file stream from " + parent}}
-		nested, err := listNestedArchiveBytes(child, payload, depth-1)
+		entries := []Entry{{Path: childPath, Type: "file", Size: int64(len(payload)), Format: format, Comment: compressedComment(parent, format)}}
+		nested, err := listArchivePayload(childPath, payload, depth-1)
 		if err != nil {
 			return nil, err
 		}
@@ -191,16 +189,122 @@ func listNestedCompressed(parent string, data []byte, depth int, format string, 
 	if err != nil {
 		return nil, err
 	}
-	return []Entry{{Path: child, Type: "file", Size: size, Format: format, Comment: "decompressed single-file stream from " + parent}}, nil
+	return []Entry{{Path: childPath, Type: "file", Size: size, Format: format, Comment: compressedComment(parent, format)}}, nil
 }
 
-func prefixNestedEntries(parent string, entries []Entry, comment string) []Entry {
+func listCPIOPayload(parent string, r io.Reader, depth int, format string) ([]Entry, error) {
+	var entries []Entry
+	for {
+		h := make([]byte, 110)
+		if _, err := io.ReadFull(r, h); err != nil {
+			return nil, err
+		}
+		if string(h[:6]) != "070701" && string(h[:6]) != "070702" {
+			return nil, io.ErrUnexpectedEOF
+		}
+		mode, err := parseHexField(h[14:22])
+		if err != nil {
+			return nil, err
+		}
+		size, err := parseHexField(h[54:62])
+		if err != nil {
+			return nil, err
+		}
+		nameSize, err := parseHexField(h[94:102])
+		if err != nil {
+			return nil, err
+		}
+		nameBytes := make([]byte, nameSize)
+		if _, err := io.ReadFull(r, nameBytes); err != nil {
+			return nil, err
+		}
+		if err := skipPadding(r, pad4(110+int64(nameSize))); err != nil {
+			return nil, err
+		}
+		name := strings.TrimRight(string(nameBytes), "\x00")
+		if name == "TRAILER!!!" {
+			break
+		}
+		typ := "file"
+		switch mode & 0170000 {
+		case 0040000:
+			typ = "dir"
+		case 0120000:
+			typ = "link"
+		}
+		childPath := nestedPath(parent, name)
+		if name != "" {
+			entries = append(entries, Entry{Path: childPath, Type: typ, Size: int64(size), Format: format, Comment: archiveComment(parent, format)})
+		}
+		if typ == "file" && hasArchiveSuffix(name) && depth > 0 {
+			payload := make([]byte, size)
+			if _, err := io.ReadFull(r, payload); err != nil {
+				return nil, err
+			}
+			nested, err := listArchivePayload(childPath, payload, depth-1)
+			if err != nil {
+				return nil, err
+			}
+			entries = append(entries, nested...)
+		} else if _, err := io.CopyN(io.Discard, r, int64(size)); err != nil {
+			return nil, err
+		}
+		if err := skipPadding(r, pad4(int64(size))); err != nil {
+			return nil, err
+		}
+	}
+	sortEntries(entries)
+	return entries, nil
+}
+
+func listExternalCompressedPayload(parent string, data []byte, depth int, format string, argv ...string) ([]Entry, error) {
+	if len(argv) == 0 {
+		return nil, nil
+	}
+	if _, err := exec.LookPath(argv[0]); err != nil {
+		return []Entry{{Path: nestedPath(parent, "content"), Type: "file", Format: format, Comment: "compressed stream; helper not installed for recursive expansion"}}, nil
+	}
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = bytes.NewReader(data)
+	payload, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	childPath := nestedPath(parent, "content")
+	if hasArchiveMagic(payload) {
+		return listArchivePayload(parent, payload, depth)
+	}
+	return []Entry{{Path: childPath, Type: "file", Size: int64(len(payload)), Format: format, Comment: compressedComment(parent, format)}}, nil
+}
+
+func prefixArchiveEntries(parent string, entries []Entry, format string) []Entry {
 	for i := range entries {
-		entries[i].Path = parent + "!" + entries[i].Path
-		entries[i].Comment = comment + " from " + parent
+		entries[i].Path = nestedPath(parent, entries[i].Path)
+		entries[i].Comment = archiveComment(parent, format)
 	}
 	sortEntries(entries)
 	return entries
+}
+
+func nestedPath(parent, child string) string {
+	if parent == "" {
+		return child
+	}
+	return parent + "!" + child
+}
+
+func archiveComment(parent, format string) string {
+	if parent == "" {
+		return format + " entry"
+	}
+	return "inside compressed file " + parent
+}
+
+func compressedComment(parent, format string) string {
+	if parent == "" {
+		return "decompressed " + format + " single-file stream"
+	}
+	return "decompressed single-file stream from " + parent
 }
 
 func hasArchiveMagic(data []byte) bool {
@@ -208,5 +312,5 @@ func hasArchiveMagic(data []byte) bool {
 	if len(head) > 64*1024 {
 		head = head[:64*1024]
 	}
-	return isZip(head) || isGzip(head) || isBzip2(head) || isTar(head) || isCPIONewc(head)
+	return isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isTar(head) || isCPIONewc(head)
 }

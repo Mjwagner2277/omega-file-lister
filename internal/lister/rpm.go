@@ -1,7 +1,6 @@
 package lister
 
 import (
-	"bufio"
 	"bytes"
 	"context"
 	"fmt"
@@ -10,14 +9,14 @@ import (
 	"os/exec"
 )
 
-func listRPM(ctx context.Context, path string) ([]Entry, error) {
-	if entries, err := listRPMViaRPM2CPIO(ctx, path); err == nil {
+func listRPM(ctx context.Context, path string, opts Options) ([]Entry, error) {
+	if entries, err := listRPMViaRPM2CPIO(ctx, path, opts); err == nil {
 		return entries, nil
 	}
 	return listWithFallback(ctx, path)
 }
 
-func listRPMViaRPM2CPIO(ctx context.Context, path string) ([]Entry, error) {
+func listRPMViaRPM2CPIO(ctx context.Context, path string, opts Options) ([]Entry, error) {
 	if _, err := exec.LookPath("rpm2cpio"); err != nil {
 		return nil, err
 	}
@@ -29,8 +28,12 @@ func listRPMViaRPM2CPIO(ctx context.Context, path string) ([]Entry, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	entries, listErr := ListCPIONewc(bufio.NewReader(out), "rpm")
+	payload, readErr := io.ReadAll(out)
 	waitErr := cmd.Wait()
+	if readErr != nil {
+		return nil, readErr
+	}
+	entries, listErr := listCPIOPayload("", bytes.NewReader(payload), defaultMaxNestedDepth, "rpm")
 	if listErr != nil {
 		return nil, listErr
 	}
@@ -53,8 +56,12 @@ func listPayloadWithHelper(ctx context.Context, payload []byte, helper string, a
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	entries, listErr := ListCPIONewc(bufio.NewReader(out), "rpm")
+	payload, readErr := io.ReadAll(out)
 	waitErr := cmd.Wait()
+	if readErr != nil {
+		return nil, readErr
+	}
+	entries, listErr := listCPIOPayload("", bytes.NewReader(payload), defaultMaxNestedDepth, "rpm")
 	if listErr != nil {
 		return nil, listErr
 	}

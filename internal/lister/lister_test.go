@@ -42,6 +42,30 @@ func TestListMultipleArchiveTypes(t *testing.T) {
 	}
 }
 
+func TestTopLevelArchivesExpandRecursively(t *testing.T) {
+	dir := t.TempDir()
+
+	zipPath := filepath.Join(dir, "outer.zip")
+	writeZipFile(t, zipPath, map[string][]byte{
+		"bundle.tgz": tarGzipBytes(t, "deep/file.txt", []byte("nested")),
+	})
+	zipEntries, err := List(context.Background(), zipPath, Options{})
+	must(t, err)
+	if !containsPath(zipEntries, "bundle.tgz!deep/file.txt") {
+		t.Fatalf("zip recursion missing nested tar.gz entry: %#v", zipEntries)
+	}
+
+	tgzPath := filepath.Join(dir, "outer.tgz")
+	writeTarGzipFile(t, tgzPath, map[string][]byte{
+		"payload.zip": zipBytes(t, map[string][]byte{"inside.txt": []byte("zip")}),
+	})
+	tgzEntries, err := List(context.Background(), tgzPath, Options{})
+	must(t, err)
+	if !containsPath(tgzEntries, "payload.zip!inside.txt") {
+		t.Fatalf("tar.gz recursion missing nested zip entry: %#v", tgzEntries)
+	}
+}
+
 func TestListTarBzip2WhenHelperExists(t *testing.T) {
 	if _, err := exec.LookPath("bzip2"); err != nil {
 		t.Skip("bzip2 helper is not installed")
@@ -172,6 +196,49 @@ func tarGzipBytes(t *testing.T, name string, data []byte) []byte {
 	must(t, tw.Close())
 	must(t, gw.Close())
 	return buf.Bytes()
+}
+
+func writeZipFile(t *testing.T, path string, files map[string][]byte) {
+	t.Helper()
+	f, err := os.Create(path)
+	must(t, err)
+	zw := zip.NewWriter(f)
+	for name, data := range files {
+		w, err := zw.Create(name)
+		must(t, err)
+		_, err = w.Write(data)
+		must(t, err)
+	}
+	must(t, zw.Close())
+	must(t, f.Close())
+}
+
+func zipBytes(t *testing.T, files map[string][]byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	for name, data := range files {
+		w, err := zw.Create(name)
+		must(t, err)
+		_, err = w.Write(data)
+		must(t, err)
+	}
+	must(t, zw.Close())
+	return buf.Bytes()
+}
+
+func writeTarGzipFile(t *testing.T, path string, files map[string][]byte) {
+	t.Helper()
+	f, err := os.Create(path)
+	must(t, err)
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+	for name, data := range files {
+		writeTarFile(t, tw, name, data)
+	}
+	must(t, tw.Close())
+	must(t, gw.Close())
+	must(t, f.Close())
 }
 
 func makeZipFixture(t *testing.T, path string) {
