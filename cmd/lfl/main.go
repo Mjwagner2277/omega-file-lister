@@ -6,7 +6,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"runtime"
 
 	"github.com/example/linux-file-lister/internal/lister"
 )
@@ -15,7 +14,8 @@ func main() {
 	var opts lister.Options
 	var jsonOut bool
 	flag.BoolVar(&jsonOut, "json", false, "emit JSON lines")
-	flag.IntVar(&opts.ISOWorkers, "workers", runtime.NumCPU(), "worker count for ISO directory scanning")
+	flag.IntVar(&opts.ISOWorkers, "workers", 0, "reserved for ISO directory scanning compatibility")
+	flag.IntVar(&opts.MaxNestedDepth, "max-nested-depth", 8, "maximum recursive depth for nested archives inside ISO files")
 	flag.Parse()
 
 	if flag.NArg() == 0 {
@@ -37,6 +37,10 @@ func main() {
 					fmt.Fprintf(os.Stderr, "write json: %v\n", err)
 					os.Exit(1)
 				}
+				continue
+			}
+			if entry.Comment != "" {
+				fmt.Printf("%s\t# %s\n", entry.Path, entry.Comment)
 				continue
 			}
 			fmt.Println(entry.Path)

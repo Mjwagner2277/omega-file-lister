@@ -72,10 +72,10 @@ func TestDebianISOFromOtherProject(t *testing.T) {
 	}
 	entries, err := List(context.Background(), isoPath, Options{})
 	must(t, err)
-	if len(entries) < 1000 {
-		t.Fatalf("Debian ISO listed %d entries, expected at least 1000", len(entries))
+	if len(entries) < 10000 {
+		t.Fatalf("Debian ISO listed %d entries, expected nested compressed-file expansion", len(entries))
 	}
-	for _, want := range []string{"README.TXT", "install.amd/VMLINUZ", "dists/TRIXIE/MAIN/BINARY_A/Packages.gz"} {
+	for _, want := range []string{"README.TXT", "install.amd/VMLINUZ", "dists/TRIXIE/MAIN/BINARY_A/Packages.gz", "dists/TRIXIE/MAIN/BINARY_A/Packages.gz!content", "doc/FAQ/debian-faq.en.html.tar.gz!index.html"} {
 		if !containsPath(entries, want) {
 			t.Fatalf("Debian ISO missing %q among %d entries from %s (%d bytes)", want, len(entries), isoPath, st.Size())
 		}
@@ -139,6 +139,7 @@ func TestISORecordRockRidgeName(t *testing.T) {
 }
 
 func TestListISO(t *testing.T) {
+	nested := tarGzipBytes(t, "inside.txt", []byte("nested"))
 	image := make([]byte, 24*isoBlockSize)
 	pvd := image[16*isoBlockSize : 17*isoBlockSize]
 	pvd[0] = 1
@@ -149,13 +150,28 @@ func TestListISO(t *testing.T) {
 	pos := 0
 	pos += copy(dir[pos:], isoRecordBytes("\x00", "", 20, isoBlockSize, true))
 	pos += copy(dir[pos:], isoRecordBytes("\x01", "", 20, isoBlockSize, true))
-	copy(dir[pos:], isoRecordBytes("HELLO.TXT;1", "hello.txt", 21, 5, false))
+	pos += copy(dir[pos:], isoRecordBytes("HELLO.TXT;1", "hello.txt", 21, 5, false))
+	copy(dir[pos:], isoRecordBytes("DATA.TGZ;1", "data.tgz", 22, uint32(len(nested)), false))
+	copy(image[22*isoBlockSize:], nested)
 
 	entries, err := ListISO(bytes.NewReader(image), int64(len(image)), Options{ISOWorkers: 2})
 	must(t, err)
-	if len(entries) != 1 || entries[0].Path != "hello.txt" || entries[0].Format != "iso9660" {
-		t.Fatalf("entries = %#v", entries)
+	for _, want := range []string{"hello.txt", "data.tgz", "data.tgz!inside.txt"} {
+		if !containsPath(entries, want) {
+			t.Fatalf("entries missing %q: %#v", want, entries)
+		}
 	}
+}
+
+func tarGzipBytes(t *testing.T, name string, data []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gw := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gw)
+	writeTarFile(t, tw, name, data)
+	must(t, tw.Close())
+	must(t, gw.Close())
+	return buf.Bytes()
 }
 
 func makeZipFixture(t *testing.T, path string) {

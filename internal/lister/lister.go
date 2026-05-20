@@ -17,14 +17,16 @@ import (
 )
 
 type Options struct {
-	ISOWorkers int
+	ISOWorkers     int
+	MaxNestedDepth int
 }
 
 type Entry struct {
-	Path   string `json:"path"`
-	Type   string `json:"type,omitempty"`
-	Size   int64  `json:"size,omitempty"`
-	Format string `json:"format"`
+	Path    string `json:"path"`
+	Type    string `json:"type,omitempty"`
+	Size    int64  `json:"size,omitempty"`
+	Format  string `json:"format"`
+	Comment string `json:"comment,omitempty"`
 }
 
 func List(ctx context.Context, path string, opts Options) ([]Entry, error) {

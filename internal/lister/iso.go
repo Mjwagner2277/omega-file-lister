@@ -16,6 +16,12 @@ type isoDirTask struct {
 	prefix string
 }
 
+type isoFileTask struct {
+	extent uint32
+	size   uint32
+	path   string
+}
+
 func ListISO(r io.ReaderAt, imageSize int64, opts Options) ([]Entry, error) {
 	pvd := make([]byte, isoBlockSize)
 	if _, err := r.ReadAt(pvd, 16*isoBlockSize); err != nil {
@@ -30,33 +36,49 @@ func ListISO(r io.ReaderAt, imageSize int64, opts Options) ([]Entry, error) {
 	}
 
 	var entries []Entry
+	var nestedFiles []isoFileTask
 	stack := []isoDirTask{{extent: root.extent, size: root.size, prefix: ""}}
 	for len(stack) > 0 {
 		last := len(stack) - 1
 		task := stack[last]
 		stack = stack[:last]
-		next, err := scanISODir(r, imageSize, task, &entries)
+		next, candidates, err := scanISODir(r, imageSize, task, &entries)
 		if err != nil {
 			return nil, err
 		}
 		stack = append(stack, next...)
+		nestedFiles = append(nestedFiles, candidates...)
 	}
+
+	for _, candidate := range nestedFiles {
+		data, err := readISOFile(r, imageSize, candidate)
+		if err != nil {
+			return nil, err
+		}
+		nested, err := listNestedArchiveBytes(candidate.path, data, nestedDepth(opts))
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, nested...)
+	}
+
 	sortEntries(entries)
 	return entries, nil
 }
 
-func scanISODir(r io.ReaderAt, imageSize int64, task isoDirTask, entries *[]Entry) ([]isoDirTask, error) {
+func scanISODir(r io.ReaderAt, imageSize int64, task isoDirTask, entries *[]Entry) ([]isoDirTask, []isoFileTask, error) {
 	offset := int64(task.extent) * isoBlockSize
 	size := int64(task.size)
 	if offset < 0 || size < 0 || offset+size > imageSize {
-		return nil, fmt.Errorf("invalid ISO directory extent %d size %d", task.extent, task.size)
+		return nil, nil, fmt.Errorf("invalid ISO directory extent %d size %d", task.extent, task.size)
 	}
 	buf := make([]byte, size)
 	if _, err := r.ReadAt(buf, offset); err != nil && err != io.EOF {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var dirs []isoDirTask
+	var candidates []isoFileTask
 	for pos := 0; pos < len(buf); {
 		length := int(buf[pos])
 		if length == 0 {
@@ -64,11 +86,11 @@ func scanISODir(r io.ReaderAt, imageSize int64, task isoDirTask, entries *[]Entr
 			continue
 		}
 		if pos+length > len(buf) {
-			return nil, fmt.Errorf("short ISO directory record")
+			return nil, nil, fmt.Errorf("short ISO directory record")
 		}
 		rec, err := parseISORecord(buf[pos : pos+length])
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		pos += length
 		if rec.name == "." || rec.name == ".." || rec.name == "" {
@@ -78,14 +100,30 @@ func scanISODir(r io.ReaderAt, imageSize int64, task isoDirTask, entries *[]Entr
 		if task.prefix != "" {
 			full = task.prefix + "/" + rec.name
 		}
-		typ := "file"
 		if rec.isDir {
-			typ = "dir"
 			dirs = append(dirs, isoDirTask{extent: rec.extent, size: rec.size, prefix: full})
+			*entries = append(*entries, Entry{Path: full, Type: "dir", Size: int64(rec.size), Format: "iso9660", Comment: "ISO-9660 directory record"})
+			continue
 		}
-		*entries = append(*entries, Entry{Path: full, Type: typ, Size: int64(rec.size), Format: "iso9660"})
+		*entries = append(*entries, Entry{Path: full, Type: "file", Size: int64(rec.size), Format: "iso9660", Comment: "ISO-9660 file extent"})
+		if isNestedCandidate(full, rec.size) {
+			candidates = append(candidates, isoFileTask{extent: rec.extent, size: rec.size, path: full})
+		}
 	}
-	return dirs, nil
+	return dirs, candidates, nil
+}
+
+func readISOFile(r io.ReaderAt, imageSize int64, file isoFileTask) ([]byte, error) {
+	offset := int64(file.extent) * isoBlockSize
+	size := int64(file.size)
+	if offset < 0 || size < 0 || offset+size > imageSize {
+		return nil, fmt.Errorf("invalid ISO file extent %d size %d for %s", file.extent, file.size, file.path)
+	}
+	data := make([]byte, size)
+	if _, err := r.ReadAt(data, offset); err != nil && err != io.EOF {
+		return nil, err
+	}
+	return data, nil
 }
 
 type isoRecord struct {
