@@ -5,11 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"path"
-	"runtime"
 	"strings"
-	"sync"
-	"sync/atomic"
 )
 
 const isoBlockSize = 2048
@@ -21,14 +17,6 @@ type isoDirTask struct {
 }
 
 func ListISO(r io.ReaderAt, imageSize int64, opts Options) ([]Entry, error) {
-	workers := opts.ISOWorkers
-	if workers <= 0 {
-		workers = runtime.NumCPU()
-	}
-	if workers > 64 {
-		workers = 64
-	}
-
 	pvd := make([]byte, isoBlockSize)
 	if _, err := r.ReadAt(pvd, 16*isoBlockSize); err != nil {
 		return nil, err
@@ -41,66 +29,34 @@ func ListISO(r io.ReaderAt, imageSize int64, opts Options) ([]Entry, error) {
 		return nil, err
 	}
 
-	tasks := make(chan isoDirTask, workers*4)
-	results := make(chan Entry, workers*64)
-	errs := make(chan error, 1)
-	var wg sync.WaitGroup
-	var pending int64 = 1
-	var closeOnce sync.Once
-
-	finishTask := func() {
-		if atomic.AddInt64(&pending, -1) == 0 {
-			closeOnce.Do(func() { close(tasks) })
-		}
-	}
-
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			for task := range tasks {
-				if err := scanISODir(r, imageSize, task, tasks, results, &pending); err != nil {
-					select {
-					case errs <- err:
-					default:
-					}
-				}
-				finishTask()
-			}
-		}()
-	}
-
-	tasks <- isoDirTask{extent: root.extent, size: root.size, prefix: ""}
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
 	var entries []Entry
-	for entry := range results {
-		entries = append(entries, entry)
-	}
-	select {
-	case err := <-errs:
-		return nil, err
-	default:
+	stack := []isoDirTask{{extent: root.extent, size: root.size, prefix: ""}}
+	for len(stack) > 0 {
+		last := len(stack) - 1
+		task := stack[last]
+		stack = stack[:last]
+		next, err := scanISODir(r, imageSize, task, &entries)
+		if err != nil {
+			return nil, err
+		}
+		stack = append(stack, next...)
 	}
 	sortEntries(entries)
 	return entries, nil
 }
 
-func scanISODir(r io.ReaderAt, imageSize int64, task isoDirTask, tasks chan<- isoDirTask, results chan<- Entry, pending *int64) error {
+func scanISODir(r io.ReaderAt, imageSize int64, task isoDirTask, entries *[]Entry) ([]isoDirTask, error) {
 	offset := int64(task.extent) * isoBlockSize
 	size := int64(task.size)
 	if offset < 0 || size < 0 || offset+size > imageSize {
-		return fmt.Errorf("invalid ISO directory extent %d size %d", task.extent, task.size)
+		return nil, fmt.Errorf("invalid ISO directory extent %d size %d", task.extent, task.size)
 	}
 	buf := make([]byte, size)
 	if _, err := r.ReadAt(buf, offset); err != nil && err != io.EOF {
-		return err
+		return nil, err
 	}
 
+	var dirs []isoDirTask
 	for pos := 0; pos < len(buf); {
 		length := int(buf[pos])
 		if length == 0 {
@@ -108,26 +64,28 @@ func scanISODir(r io.ReaderAt, imageSize int64, task isoDirTask, tasks chan<- is
 			continue
 		}
 		if pos+length > len(buf) {
-			return fmt.Errorf("short ISO directory record")
+			return nil, fmt.Errorf("short ISO directory record")
 		}
 		rec, err := parseISORecord(buf[pos : pos+length])
 		if err != nil {
-			return err
+			return nil, err
 		}
 		pos += length
 		if rec.name == "." || rec.name == ".." || rec.name == "" {
 			continue
 		}
-		full := path.Join(task.prefix, rec.name)
+		full := rec.name
+		if task.prefix != "" {
+			full = task.prefix + "/" + rec.name
+		}
 		typ := "file"
 		if rec.isDir {
 			typ = "dir"
-			atomic.AddInt64(pending, 1)
-			go func(next isoDirTask) { tasks <- next }(isoDirTask{extent: rec.extent, size: rec.size, prefix: full})
+			dirs = append(dirs, isoDirTask{extent: rec.extent, size: rec.size, prefix: full})
 		}
-		results <- Entry{Path: full, Type: typ, Size: int64(rec.size), Format: "iso9660"}
+		*entries = append(*entries, Entry{Path: full, Type: typ, Size: int64(rec.size), Format: "iso9660"})
 	}
-	return nil
+	return dirs, nil
 }
 
 type isoRecord struct {
