@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/example/linux-file-lister/internal/lister"
+	"github.com/Mjwagner2277/omega-file-lister/internal/lister"
 )
 
 func main() {
