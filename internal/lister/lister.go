@@ -51,7 +51,7 @@ func List(ctx context.Context, path string, opts Options) ([]Entry, error) {
 	if isRPM(head) {
 		return listRPM(ctx, path, opts)
 	}
-	if isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isTar(head) || isCPIONewc(head) {
+	if isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isSquashFS(head) || isTar(head) || isCPIONewc(head) {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
@@ -171,6 +171,10 @@ func isXZ(b []byte) bool {
 
 func isZstd(b []byte) bool {
 	return len(b) >= 4 && b[0] == 0x28 && b[1] == 0xb5 && b[2] == 0x2f && b[3] == 0xfd
+}
+
+func isSquashFS(b []byte) bool {
+	return len(b) >= 4 && string(b[:4]) == "hsqs"
 }
 
 func isTar(b []byte) bool {

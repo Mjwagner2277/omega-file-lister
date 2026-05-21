@@ -14,7 +14,7 @@ paths.
 - Recursive compressed/archive expansion for supported formats, including nested files inside ISO images
 - tar, tar.gz, tar.bz2, tar.xz, tar.zst, tgz, tbz2, txz, tzst
 - zip, jar, war
-- gzip, bzip2, xz, and zstd single-file streams
+- gzip, bzip2, xz, zstd, and SquashFS filesystem images
 - cpio `newc` archives
 - rpm packages with supported payload compressors
 - fallback listing through installed tools: `bsdtar`, `tar`, `7z`, `unrar`,
@@ -41,6 +41,15 @@ The scanner does not read the whole ISO image. It reads directory extents plus
 file extents whose names indicate supported compressed content, then uses format
 signatures while expanding nested payloads. xz and zstd recursion require the
 corresponding Linux helper command to be installed.
+
+## Count Discrepancies
+
+If a mounted ISO appears to contain far more files than a flat ISO directory
+listing, the extra files are often inside compressed filesystem images such as
+`install.img` or `filesystem.squashfs`. `lfl` detects SquashFS magic in ISO
+`.img` and `.squashfs` candidates and expands it with `unsquashfs` when that
+helper is installed. Without `unsquashfs`, the SquashFS image itself is still
+listed and annotated, but its internal files cannot be enumerated.
 
 ## Build
 

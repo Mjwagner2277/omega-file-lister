@@ -51,6 +51,13 @@ func ListISO(r io.ReaderAt, imageSize int64, opts Options) ([]Entry, error) {
 	}
 
 	for _, candidate := range nestedFiles {
+		head, err := readISOFilePrefix(r, imageSize, candidate, 64*1024)
+		if err != nil {
+			return nil, err
+		}
+		if !hasArchiveMagic(head) {
+			continue
+		}
 		data, err := readISOFile(r, imageSize, candidate)
 		if err != nil {
 			return nil, err
@@ -114,10 +121,17 @@ func scanISODir(r io.ReaderAt, imageSize int64, task isoDirTask, entries *[]Entr
 }
 
 func readISOFile(r io.ReaderAt, imageSize int64, file isoFileTask) ([]byte, error) {
+	return readISOFilePrefix(r, imageSize, file, int64(file.size))
+}
+
+func readISOFilePrefix(r io.ReaderAt, imageSize int64, file isoFileTask, limit int64) ([]byte, error) {
 	offset := int64(file.extent) * isoBlockSize
 	size := int64(file.size)
 	if offset < 0 || size < 0 || offset+size > imageSize {
 		return nil, fmt.Errorf("invalid ISO file extent %d size %d for %s", file.extent, file.size, file.path)
+	}
+	if limit > 0 && size > limit {
+		size = limit
 	}
 	data := make([]byte, size)
 	if _, err := r.ReadAt(data, offset); err != nil && err != io.EOF {

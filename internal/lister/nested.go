@@ -8,6 +8,7 @@ import (
 	"compress/bzip2"
 	"compress/gzip"
 	"io"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -28,7 +29,7 @@ func isNestedCandidate(name string, size uint32) bool {
 func hasArchiveSuffix(name string) bool {
 	lower := strings.ToLower(name)
 	for _, suffix := range []string{
-		".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar.zst", ".tzst", ".zip", ".jar", ".war", ".cpio", ".cpio.gz", ".cpio.xz", ".cpio.zst", ".gz", ".bz2", ".xz", ".zst",
+		".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar.zst", ".tzst", ".squashfs", ".img", ".zip", ".jar", ".war", ".cpio", ".cpio.gz", ".cpio.xz", ".cpio.zst", ".gz", ".bz2", ".xz", ".zst",
 	} {
 		if strings.HasSuffix(lower, suffix) {
 			return true
@@ -69,6 +70,8 @@ func listArchivePayload(parent string, data []byte, depth int) ([]Entry, error) 
 		return listExternalCompressedPayload(parent, data, depth, "xz", "xz", "-dc")
 	case isZstd(head):
 		return listExternalCompressedPayload(parent, data, depth, "zstd", "zstd", "-dc")
+	case isSquashFS(head):
+		return listSquashFSPayload(parent, data)
 	case isTar(head):
 		return listTarPayload(parent, tar.NewReader(bytes.NewReader(data)), depth, "tar")
 	case isCPIONewc(head):
@@ -257,6 +260,52 @@ func listCPIOPayload(parent string, r io.Reader, depth int, format string) ([]En
 	return entries, nil
 }
 
+func listSquashFSPayload(parent string, data []byte) ([]Entry, error) {
+	if _, err := exec.LookPath("unsquashfs"); err != nil {
+		return []Entry{{Path: nestedPath(parent, "content"), Type: "file", Format: "squashfs", Comment: "SquashFS image; install unsquashfs for recursive expansion"}}, nil
+	}
+	tmp, err := os.CreateTemp("", "lfl-squashfs-*")
+	if err != nil {
+		return nil, err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+
+	cmd := exec.Command("unsquashfs", "-ll", name)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	var entries []Entry
+	for _, line := range strings.Split(string(out), "\n") {
+		idx := strings.Index(line, "squashfs-root")
+		if idx < 0 {
+			continue
+		}
+		name := strings.TrimPrefix(line[idx:], "squashfs-root")
+		name = strings.TrimPrefix(name, "/")
+		if name == "" {
+			continue
+		}
+		typ := "file"
+		if strings.HasPrefix(line, "d") {
+			typ = "dir"
+		} else if strings.HasPrefix(line, "l") {
+			typ = "link"
+		}
+		entries = append(entries, Entry{Path: nestedPath(parent, name), Type: typ, Format: "squashfs", Comment: archiveComment(parent, "squashfs")})
+	}
+	sortEntries(entries)
+	return entries, nil
+}
+
 func listExternalCompressedPayload(parent string, data []byte, depth int, format string, argv ...string) ([]Entry, error) {
 	if len(argv) == 0 {
 		return nil, nil
@@ -312,5 +361,5 @@ func hasArchiveMagic(data []byte) bool {
 	if len(head) > 64*1024 {
 		head = head[:64*1024]
 	}
-	return isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isTar(head) || isCPIONewc(head)
+	return isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isSquashFS(head) || isTar(head) || isCPIONewc(head)
 }

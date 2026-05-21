@@ -85,6 +85,57 @@ func TestListTarBzip2WhenHelperExists(t *testing.T) {
 	}
 }
 
+func TestListSquashFSWhenHelperExists(t *testing.T) {
+	if _, err := exec.LookPath("mksquashfs"); err != nil {
+		t.Skip("mksquashfs helper is not installed")
+	}
+	if _, err := exec.LookPath("unsquashfs"); err != nil {
+		t.Skip("unsquashfs helper is not installed")
+	}
+	dir := t.TempDir()
+	imagePath := filepath.Join(dir, "root.squashfs")
+	makeSquashFSFixture(t, imagePath)
+
+	entries, err := List(context.Background(), imagePath, Options{})
+	must(t, err)
+	if !containsPath(entries, "etc/example.conf") {
+		t.Fatalf("squashfs entries missing fixture file: %#v", entries)
+	}
+}
+
+func TestListISOExpandsSquashFSImageWhenHelperExists(t *testing.T) {
+	if _, err := exec.LookPath("mksquashfs"); err != nil {
+		t.Skip("mksquashfs helper is not installed")
+	}
+	if _, err := exec.LookPath("unsquashfs"); err != nil {
+		t.Skip("unsquashfs helper is not installed")
+	}
+	dir := t.TempDir()
+	squashPath := filepath.Join(dir, "install.img")
+	makeSquashFSFixture(t, squashPath)
+	squash, err := os.ReadFile(squashPath)
+	must(t, err)
+
+	image := make([]byte, 28*isoBlockSize+len(squash))
+	pvd := image[16*isoBlockSize : 17*isoBlockSize]
+	pvd[0] = 1
+	copy(pvd[1:6], "CD001")
+	copy(pvd[156:], isoRecordBytes("\x00", "", 20, isoBlockSize, true))
+
+	root := image[20*isoBlockSize : 21*isoBlockSize]
+	pos := 0
+	pos += copy(root[pos:], isoRecordBytes("\x00", "", 20, isoBlockSize, true))
+	pos += copy(root[pos:], isoRecordBytes("\x01", "", 20, isoBlockSize, true))
+	copy(root[pos:], isoRecordBytes("INSTALL.IMG;1", "install.img", 22, uint32(len(squash)), false))
+	copy(image[22*isoBlockSize:], squash)
+
+	entries, err := ListISO(bytes.NewReader(image), int64(len(image)), Options{})
+	must(t, err)
+	if !containsPath(entries, "install.img!etc/example.conf") {
+		t.Fatalf("ISO squashfs expansion missing fixture file: %#v", entries)
+	}
+}
+
 func TestDebianISOFromOtherProject(t *testing.T) {
 	isoPath := os.Getenv("LFL_DEBIAN_ISO")
 	if isoPath == "" {
@@ -196,6 +247,18 @@ func tarGzipBytes(t *testing.T, name string, data []byte) []byte {
 	must(t, tw.Close())
 	must(t, gw.Close())
 	return buf.Bytes()
+}
+
+func makeSquashFSFixture(t *testing.T, imagePath string) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "root")
+	must(t, os.MkdirAll(filepath.Join(root, "etc"), 0755))
+	must(t, os.WriteFile(filepath.Join(root, "etc", "example.conf"), []byte("ok\n"), 0644))
+	cmd := exec.Command("mksquashfs", root, imagePath, "-quiet", "-noappend")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("mksquashfs fixture: %v\n%s", err, out)
+	}
 }
 
 func writeZipFile(t *testing.T, path string, files map[string][]byte) {

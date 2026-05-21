@@ -44,3 +44,10 @@ only compressed/archive candidate file extents, and streams single-file gzip, bz
 zstd payloads to avoid retaining large decompressed package indexes in memory.
 This benchmark now includes nested compressed-file expansion, so it is not
 directly comparable to the earlier directory-only ISO benchmark.
+
+## Rocky boot ISO SquashFS check
+
+With `unsquashfs` installed, `lfl /private/tmp/Rocky-9-latest-x86_64-boot.iso`
+listed 60,765 entries, including files under `IMAGES/install.img!`. The flat ISO
+tree from `bsdtar -tf` lists about 31 entries, which confirms that the large
+count discrepancy comes from files inside the SquashFS `install.img` payload.
