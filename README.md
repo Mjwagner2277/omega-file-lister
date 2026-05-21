@@ -77,6 +77,7 @@ go build ./cmd/lfl
 lfl path/to/archive.iso
 lfl -json path/to/package.rpm
 lfl -max-nested-depth 4 path/to/image.iso
+lfl -mount-iso path/to/repacked.iso
 ```
 
 The default output is one path per line with a trailing `# comment` when the
@@ -90,3 +91,11 @@ dists/TRIXIE/MAIN/BINARY_A/Packages.gz!content	# decompressed single-file stream
 JSON output emits records with path, type, size, source format, and optional
 comment. A full Debian netinst ISO example is checked in at
 `examples/debian-iso-output.txt`.
+
+## Mounted ISO Fallback
+
+When repacked media behaves differently from the native and libarchive catalog
+views, Linux users can run `lfl -mount-iso image.iso`. This mounts the ISO
+read-only with `mount -o loop,ro`, walks the mounted filesystem, recursively
+expands supported archive files found in that mounted view, then unmounts. This
+mode requires Linux privileges for loop mounting and is intentionally opt-in.
