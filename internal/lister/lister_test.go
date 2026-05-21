@@ -129,7 +129,7 @@ func TestListISOExpandsSquashFSImageWhenHelperExists(t *testing.T) {
 	copy(root[pos:], isoRecordBytes("INSTALL.IMG;1", "install.img", 22, uint32(len(squash)), false))
 	copy(image[22*isoBlockSize:], squash)
 
-	entries, err := ListISO(bytes.NewReader(image), int64(len(image)), Options{})
+	entries, err := ListISO(context.Background(), "", bytes.NewReader(image), int64(len(image)), Options{})
 	must(t, err)
 	if !containsPath(entries, "install.img!etc/example.conf") {
 		t.Fatalf("ISO squashfs expansion missing fixture file: %#v", entries)
@@ -229,7 +229,7 @@ func TestListISO(t *testing.T) {
 	copy(dir[pos:], isoRecordBytes("DATA.TGZ;1", "data.tgz", 22, uint32(len(nested)), false))
 	copy(image[22*isoBlockSize:], nested)
 
-	entries, err := ListISO(bytes.NewReader(image), int64(len(image)), Options{ISOWorkers: 2})
+	entries, err := ListISO(context.Background(), "", bytes.NewReader(image), int64(len(image)), Options{ISOWorkers: 2})
 	must(t, err)
 	for _, want := range []string{"hello.txt", "data.tgz", "data.tgz!inside.txt"} {
 		if !containsPath(entries, want) {

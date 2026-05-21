@@ -42,6 +42,20 @@ file extents whose names indicate supported compressed content, then uses format
 signatures while expanding nested payloads. xz and zstd recursion require the
 corresponding Linux helper command to be installed.
 
+## Repacked ISO Support
+
+For teams that customize a base Linux ISO and repack it, `lfl` uses two layers:
+
+1. A native ISO-9660 extent walker for speed and direct reads of nested payloads.
+2. A `bsdtar`/libarchive catalog merge when available, which catches entries
+   exposed through Rock Ridge, Joliet, UDF, or other repacked ISO metadata that
+   the minimal native ISO parser may not see.
+
+When libarchive finds archive candidates that were not already expanded by the
+native extent walker, `lfl` extracts those candidates with `bsdtar -xOf` and runs
+the same recursive archive expansion over them. This is important for repacked
+installer media where the mounted view is richer than the primary ISO-9660 tree.
+
 ## Count Discrepancies
 
 If a mounted ISO appears to contain far more files than a flat ISO directory

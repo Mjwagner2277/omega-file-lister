@@ -46,7 +46,7 @@ func List(ctx context.Context, path string, opts Options) ([]Entry, error) {
 		if err != nil {
 			return nil, err
 		}
-		return ListISO(file, st.Size(), opts)
+		return ListISO(ctx, path, file, st.Size(), opts)
 	}
 	if isRPM(head) {
 		return listRPM(ctx, path, opts)

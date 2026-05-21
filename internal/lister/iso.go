@@ -2,6 +2,7 @@ package lister
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -22,7 +23,7 @@ type isoFileTask struct {
 	path   string
 }
 
-func ListISO(r io.ReaderAt, imageSize int64, opts Options) ([]Entry, error) {
+func ListISO(ctx context.Context, path string, r io.ReaderAt, imageSize int64, opts Options) ([]Entry, error) {
 	pvd := make([]byte, isoBlockSize)
 	if _, err := r.ReadAt(pvd, 16*isoBlockSize); err != nil {
 		return nil, err
@@ -67,6 +68,13 @@ func ListISO(r io.ReaderAt, imageSize int64, opts Options) ([]Entry, error) {
 			return nil, err
 		}
 		entries = append(entries, nested...)
+	}
+
+	if path != "" {
+		external, err := listISOWithBSDTar(ctx, path, entries, nestedDepth(opts))
+		if err == nil {
+			entries = append(entries, external...)
+		}
 	}
 
 	sortEntries(entries)
