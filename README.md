@@ -99,3 +99,23 @@ views, Linux users can run `lfl -mount-iso image.iso`. This mounts the ISO
 read-only with `mount -o loop,ro`, walks the mounted filesystem, recursively
 expands supported archive files found in that mounted view, then unmounts. This
 mode requires Linux privileges for loop mounting and is intentionally opt-in.
+
+## Linux Container Mount Test
+
+For testing `-mount-iso` from macOS or another non-Linux host, use Docker with a
+Linux VM. The repo includes a narrow privileged runner:
+
+```sh
+scripts/run-mounted-iso-container.sh /path/to/repacked.iso .container-results
+```
+
+The runner cross-builds a Linux `lfl` binary, mounts only that binary, the target
+ISO, and an output directory into the container, then runs:
+
+```sh
+lfl -mount-iso /input.iso > /out/mounted.out
+```
+
+This container must be privileged because Linux loop mounts require mount
+capabilities. Only run it with ISO files and output directories you intend to
+expose to the container.
