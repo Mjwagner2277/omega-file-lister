@@ -1,17 +1,19 @@
 # Linux File Lister
 
-`lfl` lists file names inside archives and disk images without extracting them.
+`lfl` lists file names inside archives and Linux ISO images.
 
-The primary fast path is a native ISO-9660 scanner that reads directory extents
-directly with `io.ReaderAt`, avoiding mounts and full-image extraction. When an
-ISO contains compressed files or archives, `lfl` reads only those candidate file
-extents and expands their contents into the same listing using `archive!entry`
-paths.
+ISO handling is intentionally mount-based only. When input is an ISO, `lfl`
+mounts it read-only on Linux, walks the mounted filesystem view, recursively
+expands supported archive/compressed files found in that mounted tree, and then
+unmounts during cleanup. This matches the way teams validate customized and
+repacked base ISOs with hand-rolled mount scripts.
+
+Non-ISO compressed/archive files are handled directly without mounting.
 
 ## Supported inputs
 
-- ISO-9660 images, including basic Rock Ridge names
-- Recursive compressed/archive expansion for supported formats, including nested files inside ISO images
+- Linux ISO images via read-only loop mount
+- Recursive compressed/archive expansion for supported formats
 - tar, tar.gz, tar.bz2, tar.xz, tar.zst, tgz, tbz2, txz, tzst
 - zip, jar, war
 - gzip, bzip2, xz, zstd, and SquashFS filesystem images
@@ -24,46 +26,40 @@ paths.
 
 ```mermaid
 flowchart TD
-    A[Open ISO with ReaderAt] --> B[Read primary volume descriptor]
-    B --> C[Walk ISO directory extents]
-    C --> D[Emit every ISO file and directory]
-    C --> E{Compressed or archive candidate?}
-    E -- no --> C
-    E -- yes --> F[Read only that file extent]
-    F --> G[Expand supported nested format in memory]
-    G --> H[Emit archive!entry paths with comments]
-    H --> I{Nested archive inside archive?}
-    I -- yes --> G
-    I -- no --> C
+    A[Open input] --> B{ISO image?}
+    B -- no --> C[Use native archive/compression handlers]
+    B -- yes --> D[Create temporary mount point]
+    D --> E[mount -o loop,ro image.iso]
+    E --> F[Walk mounted filesystem]
+    F --> G[Emit every mounted file, dir, and link]
+    F --> H{Supported archive/compressed file?}
+    H -- yes --> I[Recursively expand nested contents]
+    I --> J[Emit archive!entry paths with comments]
+    H -- no --> F
+    J --> F
+    F --> K[umount and remove mount point]
 ```
 
-The scanner does not read the whole ISO image. It reads directory extents plus
-file extents whose names indicate supported compressed content, then uses format
-signatures while expanding nested payloads. xz and zstd recursion require the
-corresponding Linux helper command to be installed.
+This means ISO counts should align with a manual mount-and-find workflow, subject
+to permissions and helper availability for nested payloads such as SquashFS.
 
 ## Repacked ISO Support
 
-For teams that customize a base Linux ISO and repack it, `lfl` uses two layers:
+For teams that customize a base Linux ISO and repack it, the mounted filesystem
+view is the source of truth. `lfl` no longer uses a separate native ISO catalog
+path for ISO inputs. It mounts the final ISO, walks what Linux exposes, expands
+nested archives from that view, and unmounts.
 
-1. A native ISO-9660 extent walker for speed and direct reads of nested payloads.
-2. A `bsdtar`/libarchive catalog merge when available, which catches entries
-   exposed through Rock Ridge, Joliet, UDF, or other repacked ISO metadata that
-   the minimal native ISO parser may not see.
-
-When libarchive finds archive candidates that were not already expanded by the
-native extent walker, `lfl` extracts those candidates with `bsdtar -xOf` and runs
-the same recursive archive expansion over them. This is important for repacked
-installer media where the mounted view is richer than the primary ISO-9660 tree.
+This mode requires Linux privileges for loop mounting. In containers, that
+usually means a privileged container or equivalent mount capabilities.
 
 ## Count Discrepancies
 
 If a mounted ISO appears to contain far more files than a flat ISO directory
 listing, the extra files are often inside compressed filesystem images such as
-`install.img` or `filesystem.squashfs`. `lfl` detects SquashFS magic in ISO
-`.img` and `.squashfs` candidates and expands it with `unsquashfs` when that
-helper is installed. Without `unsquashfs`, the SquashFS image itself is still
-listed and annotated, but its internal files cannot be enumerated.
+`install.img` or `filesystem.squashfs`. `lfl` expands SquashFS when `unsquashfs`
+is installed. Without `unsquashfs`, the SquashFS image itself is still listed and
+annotated, but its internal files cannot be enumerated.
 
 ## Build
 
@@ -74,35 +70,26 @@ go build ./cmd/lfl
 ## Usage
 
 ```sh
-lfl path/to/archive.iso
+lfl path/to/repacked.iso
 lfl -json path/to/package.rpm
-lfl -max-nested-depth 4 path/to/image.iso
-lfl -mount-iso path/to/repacked.iso
+lfl -max-nested-depth 4 path/to/archive.tar.gz
 ```
 
 The default output is one path per line with a trailing `# comment` when the
 entry has context:
 
 ```text
-dists/TRIXIE/MAIN/BINARY_A/Packages.gz	# ISO-9660 file extent
-dists/TRIXIE/MAIN/BINARY_A/Packages.gz!content	# decompressed single-file stream from dists/TRIXIE/MAIN/BINARY_A/Packages.gz
+images/install.img	# mounted ISO filesystem entry
+images/install.img!etc/os-release	# inside compressed file images/install.img
 ```
 
 JSON output emits records with path, type, size, source format, and optional
 comment. A full Debian netinst ISO example is checked in at
 `examples/debian-iso-output.txt`.
 
-## Mounted ISO Fallback
-
-When repacked media behaves differently from the native and libarchive catalog
-views, Linux users can run `lfl -mount-iso image.iso`. This mounts the ISO
-read-only with `mount -o loop,ro`, walks the mounted filesystem, recursively
-expands supported archive files found in that mounted view, then unmounts. This
-mode requires Linux privileges for loop mounting and is intentionally opt-in.
-
 ## Linux Container Mount Test
 
-For testing `-mount-iso` from macOS or another non-Linux host, use Docker with a
+For testing ISO mounting from macOS or another non-Linux host, use Docker with a
 Linux VM. The repo includes a narrow privileged runner:
 
 ```sh
@@ -113,7 +100,7 @@ The runner cross-builds a Linux `lfl` binary, mounts only that binary, the targe
 ISO, and an output directory into the container, then runs:
 
 ```sh
-lfl -mount-iso /input.iso > /out/mounted.out
+lfl /input.iso > /out/mounted.out
 ```
 
 This container must be privileged because Linux loop mounts require mount

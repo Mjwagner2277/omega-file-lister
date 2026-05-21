@@ -22,7 +22,7 @@ bin=$(GOARCH="$goarch" scripts/build-linux-binary.sh ".cache/lfl-linux-$goarch")
 repo=$(pwd)
 
 cat >&2 <<MSG
-Running a privileged Linux container so mount -o loop,ro can work.
+Running a privileged Linux container so ISO mount -o loop,ro can work.
 Mounted host paths are intentionally narrow:
   binary: $repo/$bin -> /lfl:ro
   iso:    $iso -> /input.iso:ro
@@ -34,4 +34,4 @@ docker run --rm --privileged \
   -v "$iso:/input.iso:ro" \
   -v "$out_dir:/out" \
   debian:bookworm-slim \
-  sh -lc 'apt-get update >/dev/null && apt-get install -y --no-install-recommends mount util-linux squashfs-tools libarchive-tools xz-utils zstd time >/dev/null && /usr/bin/time -p /lfl -mount-iso /input.iso >/out/mounted.out && wc -l /out/mounted.out'
+  sh -lc 'apt-get update >/dev/null && apt-get install -y --no-install-recommends mount util-linux squashfs-tools libarchive-tools xz-utils zstd time >/dev/null && /usr/bin/time -p /lfl /input.iso >/out/mounted.out && wc -l /out/mounted.out'

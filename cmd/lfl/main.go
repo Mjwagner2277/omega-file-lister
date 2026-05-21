@@ -14,9 +14,7 @@ func main() {
 	var opts lister.Options
 	var jsonOut bool
 	flag.BoolVar(&jsonOut, "json", false, "emit JSON lines")
-	flag.IntVar(&opts.ISOWorkers, "workers", 0, "reserved for ISO directory scanning compatibility")
-	flag.IntVar(&opts.MaxNestedDepth, "max-nested-depth", 8, "maximum recursive depth for nested archives inside ISO files")
-	flag.BoolVar(&opts.MountISO, "mount-iso", false, "mount ISO read-only on Linux and walk mounted files instead of native ISO parsing")
+	flag.IntVar(&opts.MaxNestedDepth, "max-nested-depth", 8, "maximum recursive depth for nested archives")
 	flag.Parse()
 
 	if flag.NArg() == 0 {

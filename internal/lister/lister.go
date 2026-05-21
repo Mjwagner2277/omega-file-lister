@@ -15,9 +15,7 @@ import (
 )
 
 type Options struct {
-	ISOWorkers     int
 	MaxNestedDepth int
-	MountISO       bool
 }
 
 type Entry struct {
@@ -43,14 +41,7 @@ func List(ctx context.Context, path string, opts Options) ([]Entry, error) {
 	}
 
 	if looksISO(file, head) {
-		if opts.MountISO {
-			return ListMountedISO(ctx, path, opts)
-		}
-		st, err := file.Stat()
-		if err != nil {
-			return nil, err
-		}
-		return ListISO(ctx, path, file, st.Size(), opts)
+		return ListMountedISO(ctx, path, opts)
 	}
 	if isRPM(head) {
 		return listRPM(ctx, path, opts)

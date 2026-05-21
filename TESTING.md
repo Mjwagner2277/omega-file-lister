@@ -47,12 +47,10 @@ directly comparable to the earlier directory-only ISO benchmark.
 
 ## Rocky boot ISO SquashFS check
 
-With `unsquashfs` installed, `lfl /private/tmp/Rocky-9-latest-x86_64-boot.iso`
+With `unsquashfs` installed on Linux with mount privileges, `lfl /private/tmp/Rocky-9-latest-x86_64-boot.iso`
 listed 60,767 entries, including files under `IMAGES/install.img!`. The flat ISO
 tree from `bsdtar -tf` lists about 31 entries, which confirms that the large
 count discrepancy comes from files inside the SquashFS `install.img` payload.
 
-The ISO path also merges `bsdtar`/libarchive catalog entries case-insensitively
-with the native ISO walk. This avoids double-counting ISO-9660 uppercase names
-versus Rock Ridge/Joliet-style names while still including entries that only
-libarchive can see in repacked images.
+ISO listing is mount-based only. The mounted Linux filesystem view is treated
+as the source of truth for customized and repacked ISO images.
