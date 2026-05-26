@@ -15,6 +15,7 @@ func main() {
 	var jsonOut bool
 	flag.BoolVar(&jsonOut, "json", false, "emit JSON lines")
 	flag.IntVar(&opts.MaxNestedDepth, "max-nested-depth", 8, "maximum recursive depth for nested archives")
+	flag.IntVar(&opts.Workers, "workers", 0, "worker count for mounted ISO nested archive expansion; defaults to CPU count")
 	flag.Parse()
 
 	if flag.NArg() == 0 {

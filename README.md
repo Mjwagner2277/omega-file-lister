@@ -72,6 +72,7 @@ go build ./cmd/lfl
 ```sh
 lfl path/to/repacked.iso
 lfl -json path/to/package.rpm
+lfl -workers 8 path/to/large.iso
 lfl -max-nested-depth 4 path/to/archive.tar.gz
 ```
 
@@ -84,8 +85,9 @@ images/install.img!etc/os-release	# inside compressed file images/install.img
 ```
 
 JSON output emits records with path, type, size, source format, and optional
-comment. A full Debian netinst ISO example is checked in at
-`examples/debian-iso-output.txt`.
+comment. A mounted ISO example output is checked in at
+`examples/mounted-small-output.txt`. Current benchmark results are in
+`BENCHMARKS.md`.
 
 ## Linux Container Mount Test
 

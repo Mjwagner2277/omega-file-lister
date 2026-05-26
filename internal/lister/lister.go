@@ -16,6 +16,7 @@ import (
 
 type Options struct {
 	MaxNestedDepth int
+	Workers        int
 }
 
 type Entry struct {
