@@ -28,7 +28,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	flags.BoolVar(&jsonOut, "json", false, "emit JSON lines instead of text output")
 	flags.BoolVar(&quiet, "quiet", false, "hide progress messages on stderr")
-	flags.BoolVar(&stdoutOut, "stdout", false, "write listings to stdout instead of <input>_files.txt")
+	flags.BoolVar(&stdoutOut, "stdout", false, "write listings to stdout instead of <input_name>_files")
 	flags.IntVar(&opts.MaxNestedDepth, "max-nested-depth", 8, "maximum recursive depth for nested archives")
 	flags.IntVar(&opts.Workers, "workers", 0, "worker count for mounted ISO nested archive expansion; default is CPU count, capped at 64")
 	flags.Usage = func() { printUsage(stderr, flags) }
@@ -109,10 +109,12 @@ func outputWriter(input string, stdoutOut bool, stdout io.Writer) (io.Writer, st
 }
 
 func defaultOutputPath(input string) string {
-	dir := filepath.Dir(input)
-	base := filepath.Base(input)
-	stem := strings.TrimSuffix(base, filepath.Ext(base))
-	return filepath.Join(dir, stem+"_files.txt")
+	name := strings.Trim(filepath.Base(input), ".")
+	name = strings.NewReplacer(".", "_", string(os.PathSeparator), "_").Replace(name)
+	if name == "" {
+		name = "output"
+	}
+	return name + "_files"
 }
 
 func writeEntries(w io.Writer, entries []lister.Entry, jsonOut bool) error {
@@ -147,14 +149,14 @@ Usage:
 
 What it does:
   Lists files from Linux ISO images and common compressed/archive formats.
-  By default, each input writes to <input-name>_files.txt next to the input.
+  By default, each input writes to <input_name>_files in the current working directory.
   ISO files are mounted read-only on Linux, walked like a normal filesystem,
   and supported compressed files inside the ISO are expanded recursively.
 
 Examples:
-  lfl rocky.iso                         # writes rocky_files.txt
-  lfl -workers 8 large.iso              # writes large_files.txt
-  lfl -json package.rpm                 # writes package_files.txt as JSON lines
+  lfl rocky.iso                         # writes rocky_iso_files
+  lfl -workers 8 large.iso              # writes large_iso_files
+  lfl -json package.rpm                 # writes package_rpm_files as JSON lines
   lfl -stdout archive.tar.gz > files.txt
 
 Flags:

@@ -78,10 +78,12 @@ lfl -quiet path/to/archive.tar.gz
 lfl -max-nested-depth 4 path/to/archive.tar.gz
 ```
 
-By default, each input writes to an output file next to the input using the
-input base name plus `_files.txt`; for example, `rocky.iso` writes
-`rocky_files.txt`. Use `-stdout` to stream the listing instead. Progress
-messages are printed to stderr. Use `-quiet` to suppress progress output.
+By default, each input writes to an output file in the current working
+directory using the input filename with dots converted to underscores, plus
+`_files`; for example, `rocky.iso` writes `rocky_iso_files` and
+`some_thing.rpm` writes `some_thing_rpm_files`. Use `-stdout` to stream
+the listing instead. Progress messages are printed to stderr. Use `-quiet` to
+suppress progress output.
 
 The default file output is one path per line with a trailing `# comment` when
 the entry has context:
@@ -110,7 +112,7 @@ ISO, and an output directory into the container, then runs:
 
 ```sh
 lfl /input.iso
-cp /input_files.txt /out/input_files.txt
+cp /input_iso_files /out/input_iso_files
 ```
 
 This container must be privileged because Linux loop mounts require mount

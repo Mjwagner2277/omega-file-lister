@@ -11,6 +11,7 @@ import (
 
 func TestRunWritesDefaultOutputFile(t *testing.T) {
 	archive := makeZip(t, map[string]string{"alpha.txt": "alpha"})
+	cleanupDefaultOutput(t, archive)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -21,8 +22,7 @@ func TestRunWritesDefaultOutputFile(t *testing.T) {
 	if stdout.String() != "" {
 		t.Fatalf("stdout = %q, want empty by default", stdout.String())
 	}
-	outPath := defaultOutputPath(archive)
-	body, err := os.ReadFile(outPath)
+	body, err := os.ReadFile(defaultOutputPath(archive))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -38,6 +38,7 @@ func TestRunWritesDefaultOutputFile(t *testing.T) {
 
 func TestRunStdoutKeepsPipeMode(t *testing.T) {
 	archive := makeZip(t, map[string]string{"alpha.txt": "alpha"})
+	cleanupDefaultOutput(t, archive)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -55,6 +56,7 @@ func TestRunStdoutKeepsPipeMode(t *testing.T) {
 
 func TestRunQuietSuppressesProgress(t *testing.T) {
 	archive := makeZip(t, map[string]string{"alpha.txt": "alpha"})
+	cleanupDefaultOutput(t, archive)
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
@@ -79,7 +81,7 @@ func TestHelpIsUserFriendly(t *testing.T) {
 		t.Fatalf("help exit code = %d", code)
 	}
 	help := stderr.String()
-	for _, want := range []string{"Linux File Lister", "Usage:", "Examples:", "_files.txt", "-stdout", "-workers", "-quiet", "-json"} {
+	for _, want := range []string{"Linux File Lister", "Usage:", "Examples:", "_files", "-stdout", "-workers", "-quiet", "-json"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q: %s", want, help)
 		}
@@ -87,11 +89,18 @@ func TestHelpIsUserFriendly(t *testing.T) {
 }
 
 func TestDefaultOutputPath(t *testing.T) {
-	got := defaultOutputPath(filepath.Join("tmp", "rocky.iso"))
-	want := filepath.Join("tmp", "rocky_files.txt")
+	got := defaultOutputPath(filepath.Join("tmp", "some_thing.rpm"))
+	want := "some_thing_rpm_files"
 	if got != want {
 		t.Fatalf("defaultOutputPath = %q, want %q", got, want)
 	}
+}
+
+func cleanupDefaultOutput(t *testing.T, input string) {
+	t.Helper()
+	out := defaultOutputPath(input)
+	_ = os.Remove(out)
+	t.Cleanup(func() { _ = os.Remove(out) })
 }
 
 func makeZip(t *testing.T, files map[string]string) string {
