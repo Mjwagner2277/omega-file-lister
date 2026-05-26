@@ -20,19 +20,25 @@ type mountedCandidate struct {
 }
 
 func ListMountedISO(ctx context.Context, path string, opts Options) ([]Entry, error) {
+	reportProgress(opts, ProgressEvent{Stage: "mount", Path: path, Message: "creating temporary mount point"})
 	mountPoint, err := os.MkdirTemp("", "lfl-iso-*")
 	if err != nil {
 		return nil, err
 	}
 	defer os.Remove(mountPoint)
 
+	reportProgress(opts, ProgressEvent{Stage: "mount", Path: path, Message: "mounting ISO read-only"})
 	if out, err := exec.CommandContext(ctx, "mount", "-o", "loop,ro", path, mountPoint).CombinedOutput(); err != nil {
 		return nil, fmt.Errorf("mount ISO read-only: %w: %s", err, bytes.TrimSpace(out))
 	}
-	defer exec.CommandContext(context.Background(), "umount", mountPoint).Run()
+	defer func() {
+		reportProgress(opts, ProgressEvent{Stage: "unmount", Path: path, Message: "unmounting ISO"})
+		exec.CommandContext(context.Background(), "umount", mountPoint).Run()
+	}()
 
 	var entries []Entry
 	var candidates []mountedCandidate
+	reportProgress(opts, ProgressEvent{Stage: "walk", Path: path, Message: "walking mounted filesystem"})
 	err = filepath.WalkDir(mountPoint, func(full string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -65,12 +71,14 @@ func ListMountedISO(ctx context.Context, path string, opts Options) ([]Entry, er
 		return nil, err
 	}
 
+	reportProgress(opts, ProgressEvent{Stage: "walk", Path: path, Count: len(entries), Total: len(candidates), Message: "mounted filesystem walk complete"})
 	nested, err := expandMountedCandidates(ctx, candidates, opts)
 	if err != nil {
 		return nil, err
 	}
 	entries = append(entries, nested...)
 	sortEntries(entries)
+	reportProgress(opts, ProgressEvent{Stage: "done", Path: path, Count: len(entries), Message: "listed entries"})
 	return entries, nil
 }
 
@@ -88,6 +96,7 @@ func expandMountedCandidates(ctx context.Context, candidates []mountedCandidate,
 	if workers > 64 {
 		workers = 64
 	}
+	reportProgress(opts, ProgressEvent{Stage: "expand", Count: len(candidates), Workers: workers, Message: "expanding mounted archive candidates"})
 
 	jobs := make(chan mountedCandidate)
 	results := make(chan []Entry, workers)
@@ -148,6 +157,7 @@ func expandMountedCandidates(ctx context.Context, candidates []mountedCandidate,
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
+	reportProgress(opts, ProgressEvent{Stage: "expand", Count: len(entries), Total: len(candidates), Workers: workers, Message: "mounted archive expansion complete"})
 	return entries, nil
 }
 

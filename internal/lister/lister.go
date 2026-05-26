@@ -17,6 +17,16 @@ import (
 type Options struct {
 	MaxNestedDepth int
 	Workers        int
+	Progress       func(ProgressEvent)
+}
+
+type ProgressEvent struct {
+	Stage   string
+	Path    string
+	Count   int
+	Total   int
+	Workers int
+	Message string
 }
 
 type Entry struct {
@@ -28,6 +38,7 @@ type Entry struct {
 }
 
 func List(ctx context.Context, path string, opts Options) ([]Entry, error) {
+	reportProgress(opts, ProgressEvent{Stage: "open", Path: path, Message: "opening input"})
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -42,25 +53,37 @@ func List(ctx context.Context, path string, opts Options) ([]Entry, error) {
 	}
 
 	if looksISO(file, head) {
+		reportProgress(opts, ProgressEvent{Stage: "detect", Path: path, Message: "detected ISO image; using Linux mount path"})
 		return ListMountedISO(ctx, path, opts)
 	}
 	if isRPM(head) {
+		reportProgress(opts, ProgressEvent{Stage: "detect", Path: path, Message: "detected RPM package"})
 		return listRPM(ctx, path, opts)
 	}
 	if isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isSquashFS(head) || isTar(head) || isCPIONewc(head) {
+		reportProgress(opts, ProgressEvent{Stage: "read", Path: path, Message: "reading archive into memory"})
 		data, err := os.ReadFile(path)
 		if err != nil {
 			return nil, err
 		}
+		reportProgress(opts, ProgressEvent{Stage: "expand", Path: path, Message: "expanding archive entries"})
 		entries, err := listArchiveBytes(data, nestedDepth(opts))
 		if err != nil {
 			return nil, err
 		}
 		sortEntries(entries)
+		reportProgress(opts, ProgressEvent{Stage: "done", Path: path, Count: len(entries), Message: "listed entries"})
 		return entries, nil
 	}
 
+	reportProgress(opts, ProgressEvent{Stage: "fallback", Path: path, Message: "trying external listing helpers"})
 	return listWithFallback(ctx, path)
+}
+
+func reportProgress(opts Options, event ProgressEvent) {
+	if opts.Progress != nil {
+		opts.Progress(event)
+	}
 }
 
 func listCompressedTarOrSingle(r io.Reader, format string, open func(io.Reader) (io.Reader, error)) ([]Entry, error) {

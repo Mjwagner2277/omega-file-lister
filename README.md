@@ -73,8 +73,12 @@ go build ./cmd/lfl
 lfl path/to/repacked.iso
 lfl -json path/to/package.rpm
 lfl -workers 8 path/to/large.iso
+lfl -quiet path/to/archive.tar.gz > files.txt
 lfl -max-nested-depth 4 path/to/archive.tar.gz
 ```
+
+Progress messages are printed to stderr so stdout remains usable for piping,
+redirecting, or JSON processing. Use `-quiet` to suppress progress output.
 
 The default output is one path per line with a trailing `# comment` when the
 entry has context:
