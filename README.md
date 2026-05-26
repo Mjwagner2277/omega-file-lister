@@ -73,7 +73,6 @@ go build ./cmd/lfl
 lfl path/to/repacked.iso
 lfl -json path/to/package.rpm
 lfl -workers 8 path/to/large.iso
-lfl -stdout path/to/archive.tar.gz > files.txt
 lfl -quiet path/to/archive.tar.gz
 lfl -max-nested-depth 4 path/to/archive.tar.gz
 ```
@@ -81,9 +80,9 @@ lfl -max-nested-depth 4 path/to/archive.tar.gz
 By default, each input writes to an output file in the current working
 directory using the input filename with dots converted to underscores, plus
 `_files`; for example, `rocky.iso` writes `rocky_iso_files` and
-`some_thing.rpm` writes `some_thing_rpm_files`. Use `-stdout` to stream
-the listing instead. Progress messages are printed to stderr. Use `-quiet` to
-suppress progress output.
+`some_thing.rpm` writes `some_thing_rpm_files`. With `-json`, output goes to
+the same base name with `.json`, such as `some_thing_rpm_files.json`.
+Progress messages are printed to stderr. Use `-quiet` to suppress progress output.
 
 The default file output is one path per line with a trailing `# comment` when
 the entry has context:
@@ -94,7 +93,7 @@ images/install.img!etc/os-release	# inside compressed file images/install.img
 ```
 
 JSON output emits records with path, type, size, source format, and optional
-comment. A mounted ISO example output is checked in at
+comment to the `.json` output file. A mounted ISO example output is checked in at
 `examples/mounted-small-output.txt`. Current benchmark results are in
 `BENCHMARKS.md`.
 

@@ -15,20 +15,18 @@ import (
 )
 
 func main() {
-	os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
+	os.Exit(run(os.Args[1:], os.Stderr))
 }
 
-func run(args []string, stdout, stderr io.Writer) int {
+func run(args []string, stderr io.Writer) int {
 	var opts lister.Options
 	var jsonOut bool
 	var quiet bool
-	var stdoutOut bool
 
 	flags := flag.NewFlagSet("lfl", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	flags.BoolVar(&jsonOut, "json", false, "emit JSON lines instead of text output")
+	flags.BoolVar(&jsonOut, "json", false, "write JSON lines to <input_name>_files.json")
 	flags.BoolVar(&quiet, "quiet", false, "hide progress messages on stderr")
-	flags.BoolVar(&stdoutOut, "stdout", false, "write listings to stdout instead of <input_name>_files")
 	flags.IntVar(&opts.MaxNestedDepth, "max-nested-depth", 8, "maximum recursive depth for nested archives")
 	flags.IntVar(&opts.Workers, "workers", 0, "worker count for mounted ISO nested archive expansion; default is CPU count, capped at 64")
 	flags.Usage = func() { printUsage(stderr, flags) }
@@ -65,7 +63,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		}
 		totalEntries += len(entries)
 
-		out, outPath, closeOut, err := outputWriter(path, stdoutOut, stdout)
+		out, outPath, closeOut, err := outputWriter(path, jsonOut)
 		if err != nil {
 			fmt.Fprintf(stderr, "lfl: %s: %v\n", path, err)
 			return 1
@@ -96,11 +94,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func outputWriter(input string, stdoutOut bool, stdout io.Writer) (io.Writer, string, func() error, error) {
-	if stdoutOut {
-		return stdout, "stdout", nil, nil
-	}
-	path := defaultOutputPath(input)
+func outputWriter(input string, jsonOut bool) (io.Writer, string, func() error, error) {
+	path := defaultOutputPath(input, jsonOut)
 	file, err := os.Create(path)
 	if err != nil {
 		return nil, path, nil, fmt.Errorf("create output %s: %w", path, err)
@@ -108,11 +103,14 @@ func outputWriter(input string, stdoutOut bool, stdout io.Writer) (io.Writer, st
 	return file, path, file.Close, nil
 }
 
-func defaultOutputPath(input string) string {
+func defaultOutputPath(input string, jsonOut bool) string {
 	name := strings.Trim(filepath.Base(input), ".")
 	name = strings.NewReplacer(".", "_", string(os.PathSeparator), "_").Replace(name)
 	if name == "" {
 		name = "output"
+	}
+	if jsonOut {
+		return name + "_files.json"
 	}
 	return name + "_files"
 }
@@ -149,15 +147,16 @@ Usage:
 
 What it does:
   Lists files from Linux ISO images and common compressed/archive formats.
-  By default, each input writes to <input_name>_files in the current working directory.
+  Each input writes to <input_name>_files in the current working directory.
+  With -json, each input writes JSON lines to <input_name>_files.json.
   ISO files are mounted read-only on Linux, walked like a normal filesystem,
   and supported compressed files inside the ISO are expanded recursively.
 
 Examples:
   lfl rocky.iso                         # writes rocky_iso_files
   lfl -workers 8 large.iso              # writes large_iso_files
-  lfl -json package.rpm                 # writes package_rpm_files as JSON lines
-  lfl -stdout archive.tar.gz > files.txt
+  lfl -json package.rpm                 # writes package_rpm_files.json
+  lfl -quiet archive.tar.gz
 
 Flags:
 `)

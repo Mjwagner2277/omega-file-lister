@@ -3,26 +3,25 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Mjwagner2277/omega-file-lister/internal/lister"
 )
 
 func TestRunWritesDefaultOutputFile(t *testing.T) {
 	archive := makeZip(t, map[string]string{"alpha.txt": "alpha"})
 	cleanupDefaultOutput(t, archive)
-	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := run([]string{archive}, &stdout, &stderr)
+	code := run([]string{archive}, &stderr)
 	if code != 0 {
 		t.Fatalf("run exit code = %d, stderr = %s", code, stderr.String())
 	}
-	if stdout.String() != "" {
-		t.Fatalf("stdout = %q, want empty by default", stdout.String())
-	}
-	body, err := os.ReadFile(defaultOutputPath(archive))
+	body, err := os.ReadFile(defaultOutputPath(archive, false))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -36,36 +35,36 @@ func TestRunWritesDefaultOutputFile(t *testing.T) {
 	}
 }
 
-func TestRunStdoutKeepsPipeMode(t *testing.T) {
+func TestRunJSONWritesJSONOutputFile(t *testing.T) {
 	archive := makeZip(t, map[string]string{"alpha.txt": "alpha"})
 	cleanupDefaultOutput(t, archive)
-	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := run([]string{"-stdout", archive}, &stdout, &stderr)
+	code := run([]string{"-json", archive}, &stderr)
 	if code != 0 {
 		t.Fatalf("run exit code = %d, stderr = %s", code, stderr.String())
 	}
-	if !strings.Contains(stdout.String(), "alpha.txt") {
-		t.Fatalf("stdout missing listed file: %q", stdout.String())
+	body, err := os.ReadFile(defaultOutputPath(archive, true))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if _, err := os.Stat(defaultOutputPath(archive)); !os.IsNotExist(err) {
-		t.Fatalf("default output file exists with -stdout, stat err = %v", err)
+	var entry lister.Entry
+	if err := json.Unmarshal(bytes.TrimSpace(body), &entry); err != nil {
+		t.Fatalf("json output is invalid: %v; body=%q", err, string(body))
+	}
+	if entry.Path != "alpha.txt" {
+		t.Fatalf("json path = %q, want alpha.txt", entry.Path)
 	}
 }
 
 func TestRunQuietSuppressesProgress(t *testing.T) {
 	archive := makeZip(t, map[string]string{"alpha.txt": "alpha"})
 	cleanupDefaultOutput(t, archive)
-	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := run([]string{"-quiet", archive}, &stdout, &stderr)
+	code := run([]string{"-quiet", archive}, &stderr)
 	if code != 0 {
 		t.Fatalf("run exit code = %d, stderr = %s", code, stderr.String())
-	}
-	if stdout.String() != "" {
-		t.Fatalf("quiet stdout = %q, want empty by default", stdout.String())
 	}
 	if stderr.String() != "" {
 		t.Fatalf("quiet stderr = %q, want empty", stderr.String())
@@ -73,34 +72,43 @@ func TestRunQuietSuppressesProgress(t *testing.T) {
 }
 
 func TestHelpIsUserFriendly(t *testing.T) {
-	var stdout bytes.Buffer
 	var stderr bytes.Buffer
 
-	code := run([]string{"-help"}, &stdout, &stderr)
+	code := run([]string{"-help"}, &stderr)
 	if code != 0 {
 		t.Fatalf("help exit code = %d", code)
 	}
 	help := stderr.String()
-	for _, want := range []string{"Linux File Lister", "Usage:", "Examples:", "_files", "-stdout", "-workers", "-quiet", "-json"} {
+	for _, want := range []string{"Linux File Lister", "Usage:", "Examples:", "_files", "_files.json", "-workers", "-quiet", "-json"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q: %s", want, help)
 		}
 	}
+	if strings.Contains(help, "stdout") {
+		t.Fatalf("help should not mention stdout: %s", help)
+	}
 }
 
 func TestDefaultOutputPath(t *testing.T) {
-	got := defaultOutputPath(filepath.Join("tmp", "some_thing.rpm"))
+	got := defaultOutputPath(filepath.Join("tmp", "some_thing.rpm"), false)
 	want := "some_thing_rpm_files"
 	if got != want {
 		t.Fatalf("defaultOutputPath = %q, want %q", got, want)
+	}
+	got = defaultOutputPath(filepath.Join("tmp", "some_thing.rpm"), true)
+	want = "some_thing_rpm_files.json"
+	if got != want {
+		t.Fatalf("defaultOutputPath json = %q, want %q", got, want)
 	}
 }
 
 func cleanupDefaultOutput(t *testing.T, input string) {
 	t.Helper()
-	out := defaultOutputPath(input)
-	_ = os.Remove(out)
-	t.Cleanup(func() { _ = os.Remove(out) })
+	for _, jsonOut := range []bool{false, true} {
+		out := defaultOutputPath(input, jsonOut)
+		_ = os.Remove(out)
+		t.Cleanup(func() { _ = os.Remove(out) })
+	}
 }
 
 func makeZip(t *testing.T, files map[string]string) string {
