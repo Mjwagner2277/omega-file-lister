@@ -52,3 +52,27 @@ docker run --rm --privileged \
   -v "$PWD/.container-results:/out" \
   debian:bookworm-slim bash /usr/local/bin/container-benchmark
 ```
+
+## Public Distro ISO Runs
+
+These benchmarks use public Linux distribution installer ISOs downloaded on May
+26, 2026. Each ISO was mounted read-only in the same privileged Debian Linux
+container, and each run recursively expanded supported compressed/archive files
+inside the mounted ISO view.
+
+| Distro ISO | Source image | ISO size | Listed entries | Nested entries | Runs (real sec) | Average |
+| --- | --- | ---: | ---: | ---: | --- | ---: |
+| Alpine Linux | `alpine-standard-3.23.0-x86_64.iso` | 344 MiB | 132 | 3 | 0.01, 0.00, 0.00 | 0.003s |
+| Debian | `debian-13.5.0-amd64-netinst.iso` | 755 MiB | 14,627 | 13,126 | 2.66, 2.60, 2.64 | 2.633s |
+| Rocky Linux | `Rocky-9-latest-x86_64-boot.iso` | 1.3 GiB | 60,765 | 60,735 | 10.05, 9.29, 9.18 | 9.507s |
+
+Nested expansion samples from the public ISO run:
+
+```text
+apks/x86_64/APKINDEX.tar.gz!APKINDEX
+dists/trixie/main/binary-amd64/Packages.gz!content
+images/install.img!boot/.vmlinuz-5.14.0-611.5.1.el9_7.x86_64.hmac
+```
+
+The Rocky result is the best real-world stress case in this group: the ISO root
+is small, but `images/install.img` expands into tens of thousands of entries.
