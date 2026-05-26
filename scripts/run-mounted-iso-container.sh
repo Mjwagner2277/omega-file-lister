@@ -34,4 +34,4 @@ docker run --rm --privileged \
   -v "$iso:/input.iso:ro" \
   -v "$out_dir:/out" \
   debian:bookworm-slim \
-  sh -lc 'apt-get update >/dev/null && apt-get install -y --no-install-recommends mount util-linux squashfs-tools libarchive-tools xz-utils zstd time >/dev/null && /usr/bin/time -p /lfl /input.iso >/out/mounted.out && wc -l /out/mounted.out'
+  sh -lc 'apt-get update >/dev/null && apt-get install -y --no-install-recommends mount util-linux squashfs-tools libarchive-tools xz-utils zstd time >/dev/null && /usr/bin/time -p /lfl /input.iso && wc -l /input_files.txt && cp /input_files.txt /out/input_files.txt'
