@@ -17,6 +17,8 @@ import (
 type Options struct {
 	MaxNestedDepth int
 	Workers        int
+	MountRoot      string
+	SudoMount      bool
 	Progress       func(ProgressEvent)
 }
 

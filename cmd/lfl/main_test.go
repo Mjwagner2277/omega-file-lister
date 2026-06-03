@@ -79,7 +79,7 @@ func TestHelpIsUserFriendly(t *testing.T) {
 		t.Fatalf("help exit code = %d", code)
 	}
 	help := stderr.String()
-	for _, want := range []string{"Linux File Lister", "Usage:", "Examples:", "_files", "_files.json", "-workers", "-quiet", "-json"} {
+	for _, want := range []string{"Linux File Lister", "Usage:", "Examples:", "_files", "_files.json", "-workers", "-mount-dir", "-no-sudo-mount", "-quiet", "-json"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q: %s", want, help)
 		}

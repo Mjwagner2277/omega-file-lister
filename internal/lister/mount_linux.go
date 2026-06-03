@@ -6,11 +6,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 )
 
@@ -21,19 +23,33 @@ type mountedCandidate struct {
 
 func ListMountedISO(ctx context.Context, path string, opts Options) ([]Entry, error) {
 	reportProgress(opts, ProgressEvent{Stage: "mount", Path: path, Message: "creating temporary mount point"})
-	mountPoint, err := os.MkdirTemp("", "lfl-iso-*")
+	if opts.MountRoot != "" {
+		if err := os.MkdirAll(opts.MountRoot, 0755); err != nil {
+			return nil, err
+		}
+	}
+	mountPoint, err := os.MkdirTemp(opts.MountRoot, "lfl-iso-*")
 	if err != nil {
 		return nil, err
 	}
 	defer os.Remove(mountPoint)
 
-	reportProgress(opts, ProgressEvent{Stage: "mount", Path: path, Message: "mounting ISO read-only"})
-	if out, err := exec.CommandContext(ctx, "mount", "-o", "loop,ro", path, mountPoint).CombinedOutput(); err != nil {
-		return nil, fmt.Errorf("mount ISO read-only: %w: %s", err, bytes.TrimSpace(out))
+	mountViaSudo := shouldUseSudoMount(opts)
+	mountMessage := "mounting ISO read-only"
+	if mountViaSudo {
+		mountMessage = "mounting ISO read-only with sudo"
+	}
+	reportProgress(opts, ProgressEvent{Stage: "mount", Path: path, Message: mountMessage})
+	if err := runMountCommand(ctx, mountViaSudo, "mount", "-o", "loop,ro", path, mountPoint); err != nil {
+		return nil, fmt.Errorf("mount ISO read-only: %w", err)
 	}
 	defer func() {
-		reportProgress(opts, ProgressEvent{Stage: "unmount", Path: path, Message: "unmounting ISO"})
-		exec.CommandContext(context.Background(), "umount", mountPoint).Run()
+		unmountMessage := "unmounting ISO"
+		if mountViaSudo {
+			unmountMessage = "unmounting ISO with sudo"
+		}
+		reportProgress(opts, ProgressEvent{Stage: "unmount", Path: path, Message: unmountMessage})
+		_ = runMountCommand(context.Background(), mountViaSudo, "umount", mountPoint)
 	}()
 
 	var entries []Entry
@@ -80,6 +96,31 @@ func ListMountedISO(ctx context.Context, path string, opts Options) ([]Entry, er
 	sortEntries(entries)
 	reportProgress(opts, ProgressEvent{Stage: "done", Path: path, Count: len(entries), Message: "listed entries"})
 	return entries, nil
+}
+
+func shouldUseSudoMount(opts Options) bool {
+	return opts.SudoMount && os.Geteuid() != 0
+}
+
+func runMountCommand(ctx context.Context, useSudo bool, command string, args ...string) error {
+	argv := append([]string{command}, args...)
+	if useSudo {
+		argv = append([]string{"sudo", "-p", "lfl sudo password: "}, argv...)
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	cmd.Stdin = os.Stdin
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = io.MultiWriter(os.Stderr, &stderr)
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(strings.Join([]string{stdout.String(), stderr.String()}, "\n"))
+		if msg == "" {
+			return err
+		}
+		return fmt.Errorf("%w: %s", err, msg)
+	}
+	return nil
 }
 
 func expandMountedCandidates(ctx context.Context, candidates []mountedCandidate, opts Options) ([]Entry, error) {

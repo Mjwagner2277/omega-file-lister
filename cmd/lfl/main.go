@@ -22,11 +22,14 @@ func run(args []string, stderr io.Writer) int {
 	var opts lister.Options
 	var jsonOut bool
 	var quiet bool
+	var noSudoMount bool
 
 	flags := flag.NewFlagSet("lfl", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.BoolVar(&jsonOut, "json", false, "write JSON lines to <input_name>_files.json")
 	flags.BoolVar(&quiet, "quiet", false, "hide progress messages on stderr")
+	flags.BoolVar(&noSudoMount, "no-sudo-mount", false, "do not use sudo for ISO mount/umount when running as a non-root user")
+	flags.StringVar(&opts.MountRoot, "mount-dir", "", "directory where ISO mount points are created; default is the system temp directory")
 	flags.IntVar(&opts.MaxNestedDepth, "max-nested-depth", 8, "maximum recursive depth for nested archives")
 	flags.IntVar(&opts.Workers, "workers", 0, "worker count for mounted ISO nested archive expansion; default is CPU count, capped at 64")
 	flags.Usage = func() { printUsage(stderr, flags) }
@@ -41,6 +44,8 @@ func run(args []string, stderr io.Writer) int {
 		printUsage(stderr, flags)
 		return 2
 	}
+
+	opts.SudoMount = !noSudoMount
 
 	if !quiet {
 		opts.Progress = func(event lister.ProgressEvent) {
@@ -151,10 +156,12 @@ What it does:
   With -json, each input writes JSON lines to <input_name>_files.json.
   ISO files are mounted read-only on Linux, walked like a normal filesystem,
   and supported compressed files inside the ISO are expanded recursively.
+  Non-root users use sudo mount by default; sudo may prompt for a password.
 
 Examples:
   lfl rocky.iso                         # writes rocky_iso_files
   lfl -workers 8 large.iso              # writes large_iso_files
+  lfl -mount-dir /mnt/lfl rocky.iso     # creates /mnt/lfl/lfl-iso-*
   lfl -json package.rpm                 # writes package_rpm_files.json
   lfl -quiet archive.tar.gz
 

@@ -50,8 +50,10 @@ view is the source of truth. `lfl` no longer uses a separate native ISO catalog
 path for ISO inputs. It mounts the final ISO, walks what Linux exposes, expands
 nested archives from that view, and unmounts.
 
-This mode requires Linux privileges for loop mounting. In containers, that
-usually means a privileged container or equivalent mount capabilities.
+This mode requires Linux privileges for loop mounting. When run as a non-root
+user, `lfl` uses `sudo mount` and `sudo umount` by default so sudoers policy can
+allow only those commands. In containers, root or a privileged container with
+equivalent mount capabilities is usually required.
 
 ## Count Discrepancies
 
@@ -73,6 +75,7 @@ go build ./cmd/lfl
 lfl path/to/repacked.iso
 lfl -json path/to/package.rpm
 lfl -workers 8 path/to/large.iso
+lfl -mount-dir path/to/mount-root path/to/repacked.iso
 lfl -quiet path/to/archive.tar.gz
 lfl -max-nested-depth 4 path/to/archive.tar.gz
 ```
@@ -83,6 +86,12 @@ directory using the input filename with dots converted to underscores, plus
 `some_thing.rpm` writes `some_thing_rpm_files`. With `-json`, output goes to
 the same base name with `.json`, such as `some_thing_rpm_files.json`.
 Progress messages are printed to stderr. Use `-quiet` to suppress progress output.
+For ISO inputs, non-root users use `sudo mount` and `sudo umount` by default,
+so sudo can prompt for a password when needed. Use `-no-sudo-mount` to force
+direct mount commands. Use `-mount-dir` to create temporary `lfl-iso-*` mount
+points under a directory you choose instead of the system temp directory. The
+chosen mount root must be writable by the user running `lfl`, because `lfl`
+creates its temporary mount point before calling `sudo mount`.
 
 The default file output is one path per line with a trailing `# comment` when
 the entry has context:
