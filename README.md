@@ -74,6 +74,19 @@ Flags:
 -max-nested-depth  recursive nested archive depth limit
 ```
 
+## Development Checks
+
+```sh
+make fmt        # rewrite Go files with gofmt
+make fmt-check  # verify Go formatting without changing files
+make lint       # run go vet
+make test       # run the Go test suite
+make check      # run fmt-check, lint, and tests
+```
+
+GitHub Actions runs the same format, lint, and test checks on pushes to `main`
+and pull requests.
+
 ## Non-Root ISO Workflow
 
 Do not run the whole app as root. Run `lfl` as your normal user:
@@ -202,6 +215,9 @@ lfl -no-sudo-mount rocky.iso
 - rpm packages with supported payload compressors
 - fallback listing through installed tools: `bsdtar`, `tar`, `7z`, `unrar`,
   `rpm2cpio`, `xz`, `zstd`, `gzip`, `bzip2`
+
+RPM files found inside mounted ISOs or other supported archives are expanded
+recursively through `rpm2cpio` when that helper is installed.
 
 ## How ISO Listing Works
 

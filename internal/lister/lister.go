@@ -17,9 +17,14 @@ import (
 type Options struct {
 	MaxNestedDepth int
 	Workers        int
-	MountRoot      string
-	SudoMount      bool
-	Progress       func(ProgressEvent)
+
+	// MountRoot is the parent directory for temporary ISO mount points.
+	MountRoot string
+
+	// SudoMount runs ISO mount/umount through sudo for non-root users.
+	SudoMount bool
+
+	Progress func(ProgressEvent)
 }
 
 type ProgressEvent struct {

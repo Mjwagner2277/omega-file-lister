@@ -43,6 +43,34 @@ func listRPMViaRPM2CPIO(ctx context.Context, path string, opts Options) ([]Entry
 	return entries, nil
 }
 
+// listRPMPayload converts RPM bytes through rpm2cpio so nested RPM files
+// follow the same recursive path as top-level RPM inputs.
+func listRPMPayload(parent string, data []byte, depth int) ([]Entry, error) {
+	if _, err := exec.LookPath("rpm2cpio"); err != nil {
+		return []Entry{{Path: nestedPath(parent, "content"), Type: "file", Format: "rpm", Comment: "RPM package; install rpm2cpio for recursive expansion"}}, nil
+	}
+	tmp, err := os.CreateTemp("", "lfl-rpm-*")
+	if err != nil {
+		return nil, err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return nil, err
+	}
+	if err := tmp.Close(); err != nil {
+		return nil, err
+	}
+
+	cmd := exec.Command("rpm2cpio", name)
+	payload, err := cmd.Output()
+	if err != nil {
+		return nil, err
+	}
+	return listCPIOPayload(parent, bytes.NewReader(payload), depth, "rpm")
+}
+
 func listPayloadWithHelper(ctx context.Context, payload []byte, helper string, args ...string) ([]Entry, error) {
 	if _, err := exec.LookPath(helper); err != nil {
 		return nil, err

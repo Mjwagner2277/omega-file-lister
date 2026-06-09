@@ -65,6 +65,57 @@ func TestTopLevelArchivesExpandRecursively(t *testing.T) {
 	}
 }
 
+func TestNestedRPMExpandsWhenHelpersExist(t *testing.T) {
+	if _, err := exec.LookPath("rpmbuild"); err != nil {
+		t.Skip("rpmbuild helper is not installed")
+	}
+	if _, err := exec.LookPath("rpm2cpio"); err != nil {
+		t.Skip("rpm2cpio helper is not installed")
+	}
+	dir := t.TempDir()
+	rpmPath := filepath.Join(dir, "fixture.rpm")
+	makeRPMFixture(t, rpmPath)
+	rpmBytes, err := os.ReadFile(rpmPath)
+	must(t, err)
+
+	zipPath := filepath.Join(dir, "outer.zip")
+	writeZipFile(t, zipPath, map[string][]byte{"package.rpm": rpmBytes})
+	entries, err := List(context.Background(), zipPath, Options{})
+	must(t, err)
+	if !containsPath(entries, "package.rpm!./opt/lfl-fixture/rpm-file.txt") {
+		t.Fatalf("nested RPM payload missing from zip entries: %#v", entries)
+	}
+}
+
+func TestMountedISOExpandsNestedRPMWhenHelpersExist(t *testing.T) {
+	if os.Getenv("LFL_RUN_MOUNT_ISO_TESTS") != "1" {
+		t.Skip("mounted ISO integration test requires Linux mount privileges; set LFL_RUN_MOUNT_ISO_TESTS=1 to run")
+	}
+	if _, err := exec.LookPath("rpmbuild"); err != nil {
+		t.Skip("rpmbuild helper is not installed")
+	}
+	if _, err := exec.LookPath("rpm2cpio"); err != nil {
+		t.Skip("rpm2cpio helper is not installed")
+	}
+
+	dir := t.TempDir()
+	root := filepath.Join(dir, "iso-root")
+	must(t, os.MkdirAll(filepath.Join(root, "Packages"), 0755))
+	makeRPMFixture(t, filepath.Join(root, "Packages", "package.rpm"))
+
+	isoPath := filepath.Join(dir, "nested-rpm.iso")
+	cmd := exec.Command(isoImageTool(t), "-quiet", "-o", isoPath, root)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("make ISO fixture: %v\n%s", err, out)
+	}
+
+	entries, err := List(context.Background(), isoPath, Options{})
+	must(t, err)
+	if !containsPath(entries, "Packages/package.rpm!./opt/lfl-fixture/rpm-file.txt") {
+		t.Fatalf("nested RPM payload missing from mounted ISO entries: %#v", entries)
+	}
+}
+
 func TestListTarBzip2WhenHelperExists(t *testing.T) {
 	if _, err := exec.LookPath("bzip2"); err != nil {
 		t.Skip("bzip2 helper is not installed")
@@ -292,6 +343,54 @@ func makeCPIOFixture(t *testing.T, path string) {
 	t.Helper()
 	archive := newcEntry("var/lib/data", 0100644, []byte("x")) + newcEntry("TRAILER!!!", 0, nil)
 	must(t, os.WriteFile(path, []byte(archive), 0644))
+}
+
+func makeRPMFixture(t *testing.T, outPath string) {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "rpmbuild")
+	for _, dir := range []string{"BUILD", "RPMS", "SOURCES", "SPECS", "SRPMS"} {
+		must(t, os.MkdirAll(filepath.Join(root, dir), 0755))
+	}
+	spec := `Name: lfl-fixture
+Version: 1.0
+Release: 1
+Summary: lfl fixture rpm
+License: MIT
+BuildArch: noarch
+%description
+lfl fixture rpm
+%install
+mkdir -p %{buildroot}/opt/lfl-fixture
+printf rpm-fixture > %{buildroot}/opt/lfl-fixture/rpm-file.txt
+%files
+/opt/lfl-fixture/rpm-file.txt
+`
+	specPath := filepath.Join(root, "SPECS", "lfl-fixture.spec")
+	must(t, os.WriteFile(specPath, []byte(spec), 0644))
+	cmd := exec.Command("rpmbuild", "--define", "_topdir "+root, "-bb", specPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("rpmbuild fixture: %v\n%s", err, out)
+	}
+	matches, err := filepath.Glob(filepath.Join(root, "RPMS", "noarch", "*.rpm"))
+	must(t, err)
+	if len(matches) != 1 {
+		t.Fatalf("expected one built rpm, found %d: %#v", len(matches), matches)
+	}
+	rpmBytes, err := os.ReadFile(matches[0])
+	must(t, err)
+	must(t, os.WriteFile(outPath, rpmBytes, 0644))
+}
+
+func isoImageTool(t *testing.T) string {
+	t.Helper()
+	for _, name := range []string{"xorrisofs", "genisoimage", "mkisofs"} {
+		path, err := exec.LookPath(name)
+		if err == nil {
+			return path
+		}
+	}
+	t.Skip("ISO image builder is not installed")
+	return ""
 }
 
 func writeTarFile(t *testing.T, tw *tar.Writer, name string, data []byte) {

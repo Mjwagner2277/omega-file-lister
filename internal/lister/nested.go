@@ -29,7 +29,7 @@ func isNestedCandidate(name string, size uint32) bool {
 func hasArchiveSuffix(name string) bool {
 	lower := strings.ToLower(name)
 	for _, suffix := range []string{
-		".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar.zst", ".tzst", ".squashfs", ".img", ".zip", ".jar", ".war", ".cpio", ".cpio.gz", ".cpio.xz", ".cpio.zst", ".gz", ".bz2", ".xz", ".zst",
+		".tar", ".tar.gz", ".tgz", ".tar.bz2", ".tbz2", ".tar.xz", ".txz", ".tar.zst", ".tzst", ".squashfs", ".img", ".zip", ".jar", ".war", ".rpm", ".cpio", ".cpio.gz", ".cpio.xz", ".cpio.zst", ".gz", ".bz2", ".xz", ".zst",
 	} {
 		if strings.HasSuffix(lower, suffix) {
 			return true
@@ -46,6 +46,7 @@ func listNestedArchiveBytes(parent string, data []byte, depth int) ([]Entry, err
 	return listArchivePayload(parent, data, depth)
 }
 
+// listArchivePayload is the central recursive dispatcher for supported payloads.
 func listArchivePayload(parent string, data []byte, depth int) ([]Entry, error) {
 	if depth <= 0 || len(data) == 0 {
 		return nil, nil
@@ -72,6 +73,8 @@ func listArchivePayload(parent string, data []byte, depth int) ([]Entry, error) 
 		return listExternalCompressedPayload(parent, data, depth, "zstd", "zstd", "-dc")
 	case isSquashFS(head):
 		return listSquashFSPayload(parent, data)
+	case isRPM(head):
+		return listRPMPayload(parent, data, depth)
 	case isTar(head):
 		return listTarPayload(parent, tar.NewReader(bytes.NewReader(data)), depth, "tar")
 	case isCPIONewc(head):
@@ -361,5 +364,5 @@ func hasArchiveMagic(data []byte) bool {
 	if len(head) > 64*1024 {
 		head = head[:64*1024]
 	}
-	return isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isSquashFS(head) || isTar(head) || isCPIONewc(head)
+	return isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isSquashFS(head) || isRPM(head) || isTar(head) || isCPIONewc(head)
 }
