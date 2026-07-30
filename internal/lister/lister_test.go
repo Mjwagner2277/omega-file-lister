@@ -87,6 +87,29 @@ func TestNestedRPMExpandsWhenHelpersExist(t *testing.T) {
 	}
 }
 
+func TestDefaultISOReaderExpandsNestedArchiveWithoutMount(t *testing.T) {
+	if _, err := exec.LookPath("bsdtar"); err != nil {
+		t.Skip("bsdtar helper is not installed")
+	}
+	dir := t.TempDir()
+	root := filepath.Join(dir, "iso-root")
+	must(t, os.MkdirAll(filepath.Join(root, "Packages"), 0755))
+	must(t, os.WriteFile(filepath.Join(root, "plain.txt"), []byte("plain"), 0644))
+	writeZipFile(t, filepath.Join(root, "Packages", "payload.zip"), map[string][]byte{"inside.txt": []byte("zip")})
+
+	isoPath := filepath.Join(dir, "archive-reader.iso")
+	makeISOFixture(t, root, isoPath)
+
+	entries, err := List(context.Background(), isoPath, Options{})
+	must(t, err)
+	if !containsPath(entries, "plain.txt") {
+		t.Fatalf("ISO archive reader missing plain file: %#v", entries)
+	}
+	if !containsPath(entries, "Packages/payload.zip!inside.txt") {
+		t.Fatalf("ISO archive reader missing nested zip payload: %#v", entries)
+	}
+}
+
 func TestMountedISOExpandsNestedRPMWhenHelpersExist(t *testing.T) {
 	if os.Getenv("LFL_RUN_MOUNT_ISO_TESTS") != "1" {
 		t.Skip("mounted ISO integration test requires Linux mount privileges; set LFL_RUN_MOUNT_ISO_TESTS=1 to run")
@@ -104,12 +127,9 @@ func TestMountedISOExpandsNestedRPMWhenHelpersExist(t *testing.T) {
 	makeRPMFixture(t, filepath.Join(root, "Packages", "package.rpm"))
 
 	isoPath := filepath.Join(dir, "nested-rpm.iso")
-	cmd := exec.Command(isoImageTool(t), "-quiet", "-o", isoPath, root)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("make ISO fixture: %v\n%s", err, out)
-	}
+	makeISOFixture(t, root, isoPath)
 
-	entries, err := List(context.Background(), isoPath, Options{})
+	entries, err := List(context.Background(), isoPath, Options{MountISO: true})
 	must(t, err)
 	if !containsPath(entries, "Packages/package.rpm!./opt/lfl-fixture/rpm-file.txt") {
 		t.Fatalf("nested RPM payload missing from mounted ISO entries: %#v", entries)
@@ -165,7 +185,7 @@ func TestDebianISOFromOtherProject(t *testing.T) {
 	if err != nil {
 		t.Skipf("Debian ISO fixture not found: %s", isoPath)
 	}
-	entries, err := List(context.Background(), isoPath, Options{})
+	entries, err := List(context.Background(), isoPath, Options{MountISO: true})
 	must(t, err)
 	if len(entries) < 10000 {
 		t.Fatalf("Debian ISO listed %d entries, expected nested compressed-file expansion", len(entries))
@@ -190,7 +210,7 @@ func BenchmarkListDebianISO(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		entries, err := List(context.Background(), isoPath, Options{})
+		entries, err := List(context.Background(), isoPath, Options{MountISO: true})
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -381,16 +401,26 @@ printf rpm-fixture > %{buildroot}/opt/lfl-fixture/rpm-file.txt
 	must(t, os.WriteFile(outPath, rpmBytes, 0644))
 }
 
-func isoImageTool(t *testing.T) string {
+func makeISOFixture(t *testing.T, root, isoPath string) {
 	t.Helper()
 	for _, name := range []string{"xorrisofs", "genisoimage", "mkisofs"} {
 		path, err := exec.LookPath(name)
 		if err == nil {
-			return path
+			cmd := exec.Command(path, "-quiet", "-o", isoPath, root)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				t.Fatalf("make ISO fixture: %v\n%s", err, out)
+			}
+			return
 		}
 	}
+	if path, err := exec.LookPath("hdiutil"); err == nil {
+		cmd := exec.Command(path, "makehybrid", "-iso", "-joliet", "-o", isoPath, root)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("make ISO fixture: %v\n%s", err, out)
+		}
+		return
+	}
 	t.Skip("ISO image builder is not installed")
-	return ""
 }
 
 func writeTarFile(t *testing.T, tw *tar.Writer, name string, data []byte) {

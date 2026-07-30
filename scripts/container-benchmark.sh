@@ -4,6 +4,13 @@ set -euo pipefail
 apt-get update >/tmp/apt-update.log
 : >/out/benchmark.log
 
+output_name() {
+  local base
+  base=$(basename "$1")
+  base=${base//./_}
+  printf "%s_files" "$base"
+}
+
 apt-get install -y --no-install-recommends \
   util-linux mount squashfs-tools time zip unzip tar gzip bzip2 xz-utils zstd \
   rpm2cpio cpio rpm ca-certificates >/tmp/apt-install.log
@@ -14,8 +21,11 @@ command -v rpm2cpio | tee -a /out/environment.txt
 
 for iso in small medium large; do
   for i in 1 2 3; do
+    out_name=$(output_name "/fixtures/lfl-${iso}.iso")
+    rm -f "$out_name"
     /usr/bin/time -p -o "/out/${iso}-${i}.time" \
-      lfl "/fixtures/lfl-${iso}.iso" >"/out/${iso}-${i}.out"
+      lfl -mount-iso "/fixtures/lfl-${iso}.iso"
+    mv "$out_name" "/out/${iso}-${i}.out"
     {
       printf "%s run %s lines " "$iso" "$i"
       wc -l <"/out/${iso}-${i}.out"
@@ -24,10 +34,15 @@ for iso in small medium large; do
   done
 done
 
+out_name=$(output_name /fixtures/lfl-large.iso)
+rm -f "$out_name"
 /usr/bin/time -p -o /out/large-workers1.time \
-  lfl -workers 1 /fixtures/lfl-large.iso >/out/large-workers1.out
+  lfl -mount-iso -workers 1 /fixtures/lfl-large.iso
+mv "$out_name" /out/large-workers1.out
+rm -f "$out_name"
 /usr/bin/time -p -o /out/large-workers8.time \
-  lfl -workers 8 /fixtures/lfl-large.iso >/out/large-workers8.out
+  lfl -mount-iso -workers 8 /fixtures/lfl-large.iso
+mv "$out_name" /out/large-workers8.out
 
 {
   printf "large workers1 lines "
@@ -72,10 +87,17 @@ rpmbuild --define "_topdir /tmp/lfl-compress/rpmbuild" \
   -bb /tmp/lfl-compress/rpmbuild/SPECS/lfl-fixture.spec >/tmp/rpmbuild.log
 
 for f in sample.zip sample.tar sample.tar.gz sample.txt.gz sample.cpio; do
-  lfl "/tmp/lfl-compress/${f}" >"/out/${f}.out"
+  path="/tmp/lfl-compress/${f}"
+  out_name=$(output_name "$path")
+  rm -f "$out_name"
+  lfl "$path"
+  mv "$out_name" "/out/${f}.out"
 done
 rpmfile="$(find /tmp/lfl-compress/rpmbuild/RPMS -name "*.rpm" | head -n 1)"
-lfl "$rpmfile" >/out/sample.rpm.out
+out_name=$(output_name "$rpmfile")
+rm -f "$out_name"
+lfl "$rpmfile"
+mv "$out_name" /out/sample.rpm.out
 
 grep -F "alpha.txt" /out/sample.zip.out >/out/check-zip.txt
 grep -F "alpha.txt" /out/sample.tar.out >/out/check-tar.txt

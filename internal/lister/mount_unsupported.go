@@ -10,3 +10,7 @@ import (
 func ListMountedISO(ctx context.Context, path string, opts Options) ([]Entry, error) {
 	return nil, fmt.Errorf("ISO listing requires Linux mount support")
 }
+
+func ListMountedISOTo(ctx context.Context, path string, opts Options, emit EntryFunc) error {
+	return fmt.Errorf("ISO listing requires Linux mount support")
+}

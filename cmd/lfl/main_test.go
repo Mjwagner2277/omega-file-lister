@@ -28,7 +28,7 @@ func TestRunWritesDefaultOutputFile(t *testing.T) {
 	if !strings.Contains(string(body), "alpha.txt") {
 		t.Fatalf("output file missing listed file: %q", string(body))
 	}
-	for _, want := range []string{"processing", "opening input", "expanding archive entries", "writing 1 entries to", "done:"} {
+	for _, want := range []string{"processing", "opening input", "expanding archive entries", "writing entries to", "wrote 1 entries to", "done:"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("stderr missing %q: %s", want, stderr.String())
 		}
@@ -79,7 +79,7 @@ func TestHelpIsUserFriendly(t *testing.T) {
 		t.Fatalf("help exit code = %d", code)
 	}
 	help := stderr.String()
-	for _, want := range []string{"Linux File Lister", "Usage:", "Examples:", "_files", "_files.json", "-workers", "-mount-dir", "-no-sudo-mount", "-quiet", "-json"} {
+	for _, want := range []string{"Linux File Lister", "Usage:", "Examples:", "_files", "_files.json", "-workers", "-mount-iso", "-mount-dir", "-no-sudo-mount", "-quiet", "-json"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q: %s", want, help)
 		}

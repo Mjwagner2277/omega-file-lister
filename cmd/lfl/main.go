@@ -28,8 +28,9 @@ func run(args []string, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	flags.BoolVar(&jsonOut, "json", false, "write JSON lines to <input_name>_files.json")
 	flags.BoolVar(&quiet, "quiet", false, "hide progress messages on stderr")
-	flags.BoolVar(&noSudoMount, "no-sudo-mount", false, "do not use sudo for ISO mount/umount when running as a non-root user")
-	flags.StringVar(&opts.MountRoot, "mount-dir", "", "directory where ISO mount points are created; default is the system temp directory")
+	flags.BoolVar(&opts.MountISO, "mount-iso", false, "mount ISO inputs read-only instead of using the default non-sudo ISO reader")
+	flags.BoolVar(&noSudoMount, "no-sudo-mount", false, "do not use sudo for ISO mount/umount when -mount-iso is set")
+	flags.StringVar(&opts.MountRoot, "mount-dir", "", "directory where ISO mount points are created when -mount-iso is set; default is the system temp directory")
 	flags.IntVar(&opts.MaxNestedDepth, "max-nested-depth", 8, "maximum recursive depth for nested archives")
 	flags.IntVar(&opts.Workers, "workers", 0, "worker count for mounted ISO nested archive expansion; default is CPU count, capped at 64")
 	flags.Usage = func() { printUsage(stderr, flags) }
@@ -61,35 +62,30 @@ func run(args []string, stderr io.Writer) int {
 		if !quiet {
 			fmt.Fprintf(stderr, "lfl: processing %s\n", path)
 		}
-		entries, err := lister.List(ctx, path, opts)
-		if err != nil {
-			fmt.Fprintf(stderr, "lfl: %s: %v\n", path, err)
-			return 1
-		}
-		totalEntries += len(entries)
-
 		out, outPath, closeOut, err := outputWriter(path, jsonOut)
 		if err != nil {
 			fmt.Fprintf(stderr, "lfl: %s: %v\n", path, err)
 			return 1
 		}
-		if closeOut != nil {
-			defer closeOut()
-		}
 
 		if !quiet {
-			fmt.Fprintf(stderr, "lfl: writing %d entries to %s\n", len(entries), outPath)
+			fmt.Fprintf(stderr, "lfl: writing entries to %s\n", outPath)
 		}
-		if err := writeEntries(out, entries, jsonOut); err != nil {
-			fmt.Fprintf(stderr, "lfl: write output: %v\n", err)
+		count := 0
+		err = lister.ListTo(ctx, path, opts, func(entry lister.Entry) error {
+			count++
+			return writeEntry(out, entry, jsonOut)
+		})
+		if closeErr := closeOut(); closeErr != nil && err == nil {
+			err = closeErr
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "lfl: %s: %v\n", path, err)
 			return 1
 		}
-		if closeOut != nil {
-			if err := closeOut(); err != nil {
-				fmt.Fprintf(stderr, "lfl: close output: %v\n", err)
-				return 1
-			}
-			closeOut = nil
+		totalEntries += count
+		if !quiet {
+			fmt.Fprintf(stderr, "lfl: wrote %d entries to %s\n", count, outPath)
 		}
 	}
 
@@ -121,27 +117,24 @@ func defaultOutputPath(input string, jsonOut bool) string {
 }
 
 func writeEntries(w io.Writer, entries []lister.Entry, jsonOut bool) error {
-	if jsonOut {
-		encoder := json.NewEncoder(w)
-		for _, entry := range entries {
-			if err := encoder.Encode(entry); err != nil {
-				return err
-			}
-		}
-		return nil
-	}
 	for _, entry := range entries {
-		if entry.Comment != "" {
-			if _, err := fmt.Fprintf(w, "%s\t# %s\n", entry.Path, entry.Comment); err != nil {
-				return err
-			}
-			continue
-		}
-		if _, err := fmt.Fprintln(w, entry.Path); err != nil {
+		if err := writeEntry(w, entry, jsonOut); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func writeEntry(w io.Writer, entry lister.Entry, jsonOut bool) error {
+	if jsonOut {
+		return json.NewEncoder(w).Encode(entry)
+	}
+	if entry.Comment != "" {
+		_, err := fmt.Fprintf(w, "%s\t# %s\n", entry.Path, entry.Comment)
+		return err
+	}
+	_, err := fmt.Fprintln(w, entry.Path)
+	return err
 }
 
 func printUsage(w io.Writer, flags *flag.FlagSet) {
@@ -154,14 +147,15 @@ What it does:
   Lists files from Linux ISO images and common compressed/archive formats.
   Each input writes to <input_name>_files in the current working directory.
   With -json, each input writes JSON lines to <input_name>_files.json.
-  ISO files are mounted read-only on Linux, walked like a normal filesystem,
-  and supported compressed files inside the ISO are expanded recursively.
-  Non-root users use sudo mount by default; sudo may prompt for a password.
+  ISO files are read without sudo by default through bsdtar/libarchive.
+  Use -mount-iso when you explicitly need Linux's mounted filesystem view.
+  Supported compressed files inside the ISO are expanded recursively.
 
 Examples:
   lfl rocky.iso                         # writes rocky_iso_files
   lfl -workers 8 large.iso              # writes large_iso_files
-  lfl -mount-dir /mnt/lfl rocky.iso     # creates /mnt/lfl/lfl-iso-*
+  lfl -mount-iso rocky.iso              # use Linux loop mount instead
+  lfl -mount-iso -mount-dir /mnt/lfl rocky.iso
   lfl -json package.rpm                 # writes package_rpm_files.json
   lfl -quiet archive.tar.gz
 

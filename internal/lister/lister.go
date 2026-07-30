@@ -18,6 +18,9 @@ type Options struct {
 	MaxNestedDepth int
 	Workers        int
 
+	// MountISO forces ISO inputs through a Linux read-only loop mount.
+	MountISO bool
+
 	// MountRoot is the parent directory for temporary ISO mount points.
 	MountRoot string
 
@@ -44,11 +47,29 @@ type Entry struct {
 	Comment string `json:"comment,omitempty"`
 }
 
+type EntryFunc func(Entry) error
+
 func List(ctx context.Context, path string, opts Options) ([]Entry, error) {
+	var entries []Entry
+	err := ListTo(ctx, path, opts, func(entry Entry) error {
+		entries = append(entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sortEntries(entries)
+	return entries, nil
+}
+
+func ListTo(ctx context.Context, path string, opts Options, emit EntryFunc) error {
+	if emit == nil {
+		return errors.New("nil entry emit function")
+	}
 	reportProgress(opts, ProgressEvent{Stage: "open", Path: path, Message: "opening input"})
 	file, err := os.Open(path)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer file.Close()
 
@@ -56,35 +77,71 @@ func List(ctx context.Context, path string, opts Options) ([]Entry, error) {
 	n, _ := io.ReadFull(file, head)
 	head = head[:n]
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return nil, err
+		return err
 	}
 
 	if looksISO(file, head) {
-		reportProgress(opts, ProgressEvent{Stage: "detect", Path: path, Message: "detected ISO image; using Linux mount path"})
-		return ListMountedISO(ctx, path, opts)
+		if opts.MountISO {
+			reportProgress(opts, ProgressEvent{Stage: "detect", Path: path, Message: "detected ISO image; using Linux mount path"})
+			return ListMountedISOTo(ctx, path, opts, emit)
+		}
+		reportProgress(opts, ProgressEvent{Stage: "detect", Path: path, Message: "detected ISO image; using non-sudo archive reader"})
+		return ListISOArchive(ctx, path, opts, emit)
 	}
 	if isRPM(head) {
 		reportProgress(opts, ProgressEvent{Stage: "detect", Path: path, Message: "detected RPM package"})
-		return listRPM(ctx, path, opts)
+		if _, err := exec.LookPath("rpm2cpio"); err == nil {
+			count := 0
+			err := listRPMViaRPM2CPIOTo(ctx, path, opts, func(entry Entry) error {
+				count++
+				return emit(entry)
+			})
+			if err != nil {
+				return err
+			}
+			reportProgress(opts, ProgressEvent{Stage: "done", Path: path, Count: count, Message: "listed entries"})
+			return nil
+		}
+		entries, err := listWithFallback(ctx, path)
+		if err != nil {
+			return err
+		}
+		return emitEntries(entries, emit)
 	}
 	if isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isSquashFS(head) || isTar(head) || isCPIONewc(head) {
 		reportProgress(opts, ProgressEvent{Stage: "read", Path: path, Message: "reading archive into memory"})
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		reportProgress(opts, ProgressEvent{Stage: "expand", Path: path, Message: "expanding archive entries"})
-		entries, err := listArchiveBytes(data, nestedDepth(opts))
+		count := 0
+		err = listArchiveBytesTo(data, nestedDepth(opts), func(entry Entry) error {
+			count++
+			return emit(entry)
+		})
 		if err != nil {
-			return nil, err
+			return err
 		}
-		sortEntries(entries)
-		reportProgress(opts, ProgressEvent{Stage: "done", Path: path, Count: len(entries), Message: "listed entries"})
-		return entries, nil
+		reportProgress(opts, ProgressEvent{Stage: "done", Path: path, Count: count, Message: "listed entries"})
+		return nil
 	}
 
 	reportProgress(opts, ProgressEvent{Stage: "fallback", Path: path, Message: "trying external listing helpers"})
-	return listWithFallback(ctx, path)
+	entries, err := listWithFallback(ctx, path)
+	if err != nil {
+		return err
+	}
+	return emitEntries(entries, emit)
+}
+
+func emitEntries(entries []Entry, emit EntryFunc) error {
+	for _, entry := range entries {
+		if err := emit(entry); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func reportProgress(opts Options, event ProgressEvent) {

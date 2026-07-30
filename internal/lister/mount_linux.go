@@ -22,15 +22,28 @@ type mountedCandidate struct {
 }
 
 func ListMountedISO(ctx context.Context, path string, opts Options) ([]Entry, error) {
+	var entries []Entry
+	err := ListMountedISOTo(ctx, path, opts, func(entry Entry) error {
+		entries = append(entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sortEntries(entries)
+	return entries, nil
+}
+
+func ListMountedISOTo(ctx context.Context, path string, opts Options, emit EntryFunc) error {
 	reportProgress(opts, ProgressEvent{Stage: "mount", Path: path, Message: "creating temporary mount point"})
 	if opts.MountRoot != "" {
 		if err := os.MkdirAll(opts.MountRoot, 0755); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	mountPoint, err := os.MkdirTemp(opts.MountRoot, "lfl-iso-*")
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer os.Remove(mountPoint)
 
@@ -41,7 +54,7 @@ func ListMountedISO(ctx context.Context, path string, opts Options) ([]Entry, er
 	}
 	reportProgress(opts, ProgressEvent{Stage: "mount", Path: path, Message: mountMessage})
 	if err := runMountCommand(ctx, mountViaSudo, "mount", "-o", "loop,ro", path, mountPoint); err != nil {
-		return nil, fmt.Errorf("mount ISO read-only: %w", err)
+		return fmt.Errorf("mount ISO read-only: %w", err)
 	}
 	defer func() {
 		unmountMessage := "unmounting ISO"
@@ -52,7 +65,7 @@ func ListMountedISO(ctx context.Context, path string, opts Options) ([]Entry, er
 		_ = runMountCommand(context.Background(), mountViaSudo, "umount", mountPoint)
 	}()
 
-	var entries []Entry
+	count := 0
 	var candidates []mountedCandidate
 	reportProgress(opts, ProgressEvent{Stage: "walk", Path: path, Message: "walking mounted filesystem"})
 	err = filepath.WalkDir(mountPoint, func(full string, d fs.DirEntry, walkErr error) error {
@@ -77,25 +90,26 @@ func ListMountedISO(ctx context.Context, path string, opts Options) ([]Entry, er
 		} else if info.Mode()&os.ModeSymlink != 0 {
 			typ = "link"
 		}
-		entries = append(entries, Entry{Path: rel, Type: typ, Size: info.Size(), Format: "iso/mount", Comment: "mounted ISO filesystem entry"})
+		if err := emit(Entry{Path: rel, Type: typ, Size: info.Size(), Format: "iso/mount", Comment: "mounted ISO filesystem entry"}); err != nil {
+			return err
+		}
+		count++
 		if typ == "file" && hasArchiveSuffix(rel) {
 			candidates = append(candidates, mountedCandidate{full: full, rel: rel})
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	reportProgress(opts, ProgressEvent{Stage: "walk", Path: path, Count: len(entries), Total: len(candidates), Message: "mounted filesystem walk complete"})
-	nested, err := expandMountedCandidates(ctx, candidates, opts)
+	reportProgress(opts, ProgressEvent{Stage: "walk", Path: path, Count: count, Total: len(candidates), Message: "mounted filesystem walk complete"})
+	nestedCount, err := expandMountedCandidatesTo(ctx, candidates, opts, emit)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	entries = append(entries, nested...)
-	sortEntries(entries)
-	reportProgress(opts, ProgressEvent{Stage: "done", Path: path, Count: len(entries), Message: "listed entries"})
-	return entries, nil
+	reportProgress(opts, ProgressEvent{Stage: "done", Path: path, Count: count + nestedCount, Message: "listed entries"})
+	return nil
 }
 
 func shouldUseSudoMount(opts Options) bool {
@@ -124,8 +138,21 @@ func runMountCommand(ctx context.Context, useSudo bool, command string, args ...
 }
 
 func expandMountedCandidates(ctx context.Context, candidates []mountedCandidate, opts Options) ([]Entry, error) {
+	var entries []Entry
+	_, err := expandMountedCandidatesTo(ctx, candidates, opts, func(entry Entry) error {
+		entries = append(entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sortEntries(entries)
+	return entries, nil
+}
+
+func expandMountedCandidatesTo(ctx context.Context, candidates []mountedCandidate, opts Options, emit EntryFunc) (int, error) {
 	if len(candidates) == 0 {
-		return nil, nil
+		return 0, nil
 	}
 	workers := opts.Workers
 	if workers <= 0 {
@@ -140,7 +167,7 @@ func expandMountedCandidates(ctx context.Context, candidates []mountedCandidate,
 	reportProgress(opts, ProgressEvent{Stage: "expand", Count: len(candidates), Workers: workers, Message: "expanding mounted archive candidates"})
 
 	jobs := make(chan mountedCandidate)
-	results := make(chan []Entry, workers)
+	results := make(chan Entry, workers)
 	errs := make(chan error, 1)
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
@@ -157,16 +184,20 @@ func expandMountedCandidates(ctx context.Context, candidates []mountedCandidate,
 					return
 				default:
 				}
-				entries, err := expandMountedCandidate(candidate, opts)
+				err := expandMountedCandidateTo(candidate, opts, func(entry Entry) error {
+					select {
+					case results <- entry:
+						return nil
+					case <-ctx.Done():
+						return ctx.Err()
+					}
+				})
 				if err != nil {
 					select {
 					case errs <- err:
 					default:
 					}
 					continue
-				}
-				if len(entries) > 0 {
-					results <- entries
 				}
 			}
 		}()
@@ -186,32 +217,56 @@ func expandMountedCandidates(ctx context.Context, candidates []mountedCandidate,
 		close(results)
 	}()
 
-	var entries []Entry
-	for batch := range results {
-		entries = append(entries, batch...)
+	count := 0
+	var emitErr error
+	for entry := range results {
+		if emitErr != nil {
+			continue
+		}
+		if err := emit(entry); err != nil {
+			emitErr = err
+			continue
+		}
+		count++
+	}
+	if emitErr != nil {
+		return count, emitErr
 	}
 	select {
 	case err := <-errs:
-		return nil, err
+		return count, err
 	default:
 	}
 	if err := ctx.Err(); err != nil {
-		return nil, err
+		return count, err
 	}
-	reportProgress(opts, ProgressEvent{Stage: "expand", Count: len(entries), Total: len(candidates), Workers: workers, Message: "mounted archive expansion complete"})
-	return entries, nil
+	reportProgress(opts, ProgressEvent{Stage: "expand", Count: count, Total: len(candidates), Workers: workers, Message: "mounted archive expansion complete"})
+	return count, nil
 }
 
 func expandMountedCandidate(candidate mountedCandidate, opts Options) ([]Entry, error) {
-	head, err := readFilePrefix(candidate.full, 64*1024)
-	if err != nil || !hasArchiveMagic(head) {
-		return nil, nil
-	}
-	data, err := os.ReadFile(candidate.full)
+	var entries []Entry
+	err := expandMountedCandidateTo(candidate, opts, func(entry Entry) error {
+		entries = append(entries, entry)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	return listNestedArchiveBytes(candidate.rel, data, nestedDepth(opts))
+	sortEntries(entries)
+	return entries, nil
+}
+
+func expandMountedCandidateTo(candidate mountedCandidate, opts Options, emit EntryFunc) error {
+	head, err := readFilePrefix(candidate.full, 64*1024)
+	if err != nil || !hasArchiveMagic(head) {
+		return nil
+	}
+	data, err := os.ReadFile(candidate.full)
+	if err != nil {
+		return err
+	}
+	return listNestedArchiveBytesTo(candidate.rel, data, nestedDepth(opts), emit)
 }
 
 func readFilePrefix(path string, limit int64) ([]byte, error) {

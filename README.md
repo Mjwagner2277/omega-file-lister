@@ -1,13 +1,14 @@
 # Linux File Lister
 
 `lfl` lists file names from Linux ISO images and common archive/compressed file
-formats. ISO handling is mount-based only: for an ISO, `lfl` mounts the image
-read-only, walks the mounted filesystem, recursively expands supported
-compressed/archive files found inside that mounted tree, writes a listing file,
-and unmounts during cleanup.
+formats. By default, ISO handling is non-sudo: `lfl` reads the ISO through
+`bsdtar`/libarchive, recursively expands supported compressed/archive files
+found inside the ISO, and writes a listing file.
 
-This matches the workflow used by teams that customize base Linux ISOs, repack
-them, and validate the final ISO through Linux's mounted filesystem view.
+Use `-mount-iso` when you need Linux's mounted filesystem view for customized or
+repacked ISOs. That mode mounts read-only, walks the mounted filesystem,
+recursively expands supported compressed/archive files found inside that mounted
+tree, and unmounts during cleanup.
 
 ## Install
 
@@ -58,7 +59,8 @@ some_thing_rpm_files.json
 lfl rocky.iso
 lfl -json package.rpm
 lfl -workers 8 large.iso
-lfl -mount-dir ~/lfl-mounts rocky.iso
+lfl -mount-iso rocky.iso
+lfl -mount-iso -mount-dir ~/lfl-mounts rocky.iso
 lfl -quiet archive.tar.gz
 lfl -max-nested-depth 4 archive.tar.gz
 ```
@@ -67,10 +69,11 @@ Flags:
 
 ```text
 -json              write JSON lines to <input_name>_files.json
--mount-dir DIR     create ISO mount points under DIR instead of system temp
--no-sudo-mount     do not use sudo for ISO mount/umount as a non-root user
+-mount-iso         mount ISO inputs read-only instead of default non-sudo reader
+-mount-dir DIR     create ISO mount points under DIR instead of system temp; requires -mount-iso
+-no-sudo-mount     do not use sudo for ISO mount/umount when -mount-iso is set
 -quiet             hide progress messages on stderr
--workers N         worker count for mounted ISO nested archive expansion
+-workers N         worker count for nested archive expansion
 -max-nested-depth  recursive nested archive depth limit
 ```
 
@@ -89,13 +92,40 @@ and pull requests.
 
 ## Non-Root ISO Workflow
 
-Do not run the whole app as root. Run `lfl` as your normal user:
+The default ISO workflow does not use `sudo` and does not mount the image:
 
 ```sh
 lfl rocky.iso
 ```
 
-When the input is an ISO and the process is not root, `lfl` runs only the mount
+Typical default terminal flow:
+
+```text
+$ lfl rocky.iso
+lfl: processing rocky.iso
+lfl: writing entries to rocky_iso_files
+lfl: rocky.iso: opening input
+lfl: rocky.iso: detected ISO image; using non-sudo archive reader
+lfl: rocky.iso: listing ISO without mounting
+lfl: rocky.iso: ISO archive listing complete (count=31, total=1)
+lfl: expanding ISO archive candidates (count=1, workers=1)
+lfl: ISO archive expansion complete (count=60735, total=1, workers=1)
+lfl: rocky.iso: listed entries (count=60766)
+lfl: wrote 60766 entries to rocky_iso_files
+lfl: done: 60766 entries from 1 input(s) in 9.5s
+```
+
+This mode requires `bsdtar`/libarchive to be installed. It is the best default
+for users without mount privileges and for low-RAM systems because entries are
+written as they are discovered instead of being retained as one complete list.
+
+Use mounted mode only when you explicitly need Linux's mounted filesystem view:
+
+```sh
+lfl -mount-iso rocky.iso
+```
+
+When `-mount-iso` is set and the process is not root, `lfl` runs only the mount
 and unmount operations through `sudo`:
 
 ```sh
@@ -109,11 +139,12 @@ If sudo needs authentication, the terminal shows:
 lfl sudo password:
 ```
 
-Typical terminal flow:
+Mounted mode terminal flow:
 
 ```text
-$ lfl rocky.iso
+$ lfl -mount-iso rocky.iso
 lfl: processing rocky.iso
+lfl: writing entries to rocky_iso_files
 lfl: rocky.iso: opening input
 lfl: rocky.iso: detected ISO image; using Linux mount path
 lfl: rocky.iso: creating temporary mount point
@@ -125,7 +156,7 @@ lfl: expanding mounted archive candidates (count=1, workers=1)
 lfl: mounted archive expansion complete (count=60735, total=1, workers=1)
 lfl: rocky.iso: listed entries (count=60765)
 lfl: rocky.iso: unmounting ISO with sudo
-lfl: writing 60765 entries to rocky_iso_files
+lfl: wrote 60765 entries to rocky_iso_files
 lfl: done: 60765 entries from 1 input(s) in 9.5s
 ```
 
@@ -139,26 +170,20 @@ ASCII flow:
              |
              v
 +--------------------------+
-| create lfl-iso-* dir     |
-| default: /tmp/lfl-iso-*  |
+| bsdtar reads ISO file    |
+| no sudo, no mount        |
 +------------+-------------+
              |
              v
 +--------------------------+
-| sudo mount -o loop,ro    |
-| sudo may prompt password |
+| stream entries to output |
+| collect archive paths    |
 +------------+-------------+
              |
              v
 +--------------------------+
-| walk mounted filesystem  |
 | expand nested archives   |
-+------------+-------------+
-             |
-             v
-+--------------------------+
-| sudo umount              |
-| remove temp mount dir    |
+| stream nested entries    |
 +------------+-------------+
              |
              v
@@ -167,10 +192,10 @@ ASCII flow:
 +--------------------------+
 ```
 
-If your sudoers policy allows passwordless mount/umount, no password prompt is
-shown. If you run from a non-interactive environment, sudo must already be
-authenticated or configured not to require a password for the mount/umount
-commands.
+If your sudoers policy allows passwordless mount/umount, mounted mode shows no
+password prompt. If you run mounted mode from a non-interactive environment,
+sudo must already be authenticated or configured not to require a password for
+the mount/umount commands.
 
 ## Mount Directory
 
@@ -181,11 +206,11 @@ typically:
 /tmp/lfl-iso-12345
 ```
 
-Override the mount root with `-mount-dir`:
+Override the mount root with `-mount-dir` when using `-mount-iso`:
 
 ```sh
 mkdir -p ~/lfl-mounts
-lfl -mount-dir ~/lfl-mounts rocky.iso
+lfl -mount-iso -mount-dir ~/lfl-mounts rocky.iso
 ```
 
 That creates a unique temporary mount point such as:
@@ -197,16 +222,17 @@ That creates a unique temporary mount point such as:
 The mount root must be writable by the user running `lfl`, because `lfl` creates
 the temporary mount directory before it calls `sudo mount`.
 
-Use `-no-sudo-mount` only when you explicitly want direct mount commands as the
-current user:
+Use `-no-sudo-mount` with `-mount-iso` only when you explicitly want direct
+mount commands as the current user:
 
 ```sh
-lfl -no-sudo-mount rocky.iso
+lfl -mount-iso -no-sudo-mount rocky.iso
 ```
 
 ## Supported Inputs
 
-- Linux ISO images via read-only loop mount
+- Linux ISO images via default non-sudo `bsdtar`/libarchive reader
+- Optional Linux ISO read-only loop mount with `-mount-iso`
 - Recursive compressed/archive expansion for supported formats
 - tar, tar.gz, tar.bz2, tar.xz, tar.zst, tgz, tbz2, txz, tzst
 - zip, jar, war
@@ -216,7 +242,7 @@ lfl -no-sudo-mount rocky.iso
 - fallback listing through installed tools: `bsdtar`, `tar`, `7z`, `unrar`,
   `rpm2cpio`, `xz`, `zstd`, `gzip`, `bzip2`
 
-RPM files found inside mounted ISOs or other supported archives are expanded
+RPM files found inside ISOs or other supported archives are expanded
 recursively through `rpm2cpio` when that helper is installed.
 
 ## How ISO Listing Works
@@ -225,35 +251,41 @@ recursively through `rpm2cpio` when that helper is installed.
 flowchart TD
     A[Open input] --> B{ISO image?}
     B -- no --> C[Use native archive/compression handlers]
-    B -- yes --> D[Create temporary mount point]
-    D --> E{running as root?}
-    E -- yes --> F[mount -o loop,ro image.iso]
-    E -- no --> G[sudo mount -o loop,ro image.iso]
-    F --> H[Walk mounted filesystem]
-    G --> H
-    H --> I[Emit every mounted file, dir, and link]
-    H --> J{Supported archive/compressed file?}
-    J -- yes --> K[Recursively expand nested contents]
-    K --> L[Emit archive!entry paths with comments]
-    J -- no --> H
-    L --> H
-    H --> M{mounted with sudo?}
-    M -- yes --> N[sudo umount]
-    M -- no --> O[umount]
-    N --> P[Remove mount point]
-    O --> P
+    B -- yes --> D{mount-iso flag?}
+    D -- no --> E[Read ISO with bsdtar without sudo]
+    E --> F[Stream ISO entries to output]
+    F --> G{Supported archive/compressed file?}
+    G -- yes --> H[Extract candidate through bsdtar]
+    H --> I[Recursively expand nested contents]
+    I --> J[Stream archive!entry paths]
+    G -- no --> F
+    D -- yes --> K[Create temporary mount point]
+    K --> L{running as root?}
+    L -- yes --> M[mount -o loop,ro image.iso]
+    L -- no --> N[sudo mount -o loop,ro image.iso]
+    M --> O[Walk mounted filesystem]
+    N --> O
+    O --> P[Stream mounted file, dir, and link entries]
+    O --> Q{Supported archive/compressed file?}
+    Q -- yes --> R[Recursively expand nested contents]
+    R --> S[Stream archive!entry paths]
+    Q -- no --> O
+    O --> T{mounted with sudo?}
+    T -- yes --> U[sudo umount]
+    T -- no --> V[umount]
 ```
 
-This means ISO counts should align with a manual mount-and-find workflow,
-subject to permissions and helper availability for nested payloads such as
-SquashFS.
+Default ISO counts come from libarchive's ISO view. Mounted counts come from
+Linux's mounted filesystem view and should align with a manual mount-and-find
+workflow, subject to permissions and helper availability for nested payloads such
+as SquashFS.
 
 ## Repacked ISO Support
 
-For teams that customize a base Linux ISO and repack it, the mounted filesystem
-view is the source of truth. `lfl` does not use a separate native ISO catalog
-path for ISO inputs. It mounts the final ISO, walks what Linux exposes, expands
-nested archives from that view, and unmounts.
+For teams that customize a base Linux ISO and repack it, use `-mount-iso` when
+the mounted Linux filesystem view is the source of truth. Default non-sudo mode
+is useful for users without mount privileges, but mounted mode is the closest
+match to a manual `mount`, `find`, and `umount` validation workflow.
 
 ## Count Discrepancies
 
@@ -263,13 +295,16 @@ listing, the extra files are often inside compressed filesystem images such as
 is installed. Without `unsquashfs`, the SquashFS image itself is still listed and
 annotated, but its internal files cannot be enumerated.
 
+If default non-sudo mode and `-mount-iso` disagree, use `-mount-iso` for workflows
+that must match the Linux kernel's mounted filesystem view.
+
 ## Output Format
 
 Text output is one path per line with a trailing `# comment` when the entry has
 context:
 
 ```text
-images/install.img	# mounted ISO filesystem entry
+images/install.img	# ISO archive entry
 images/install.img!etc/os-release	# inside compressed file images/install.img
 ```
 
@@ -293,7 +328,7 @@ The runner cross-builds a Linux `lfl` binary, mounts only that binary, the targe
 ISO, and an output directory into the container, then runs:
 
 ```sh
-lfl /input.iso
+lfl -mount-iso /input.iso
 cp /input_iso_files /out/input_iso_files
 ```
 
