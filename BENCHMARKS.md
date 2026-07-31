@@ -18,6 +18,66 @@ The large ISO produced the same 30,301 entries with `-workers 1` and
 pool is used for mounted-ISO nested archive expansion; the mounted filesystem
 walk remains deterministic and serial.
 
+## Streaming Memory Comparison
+
+A focused Linux RSS comparison was run with the `v0.2.8` tag and the current
+working tree. Each fixture contains 100,000 entries and was run three times with
+`/usr/bin/time -v` in a Debian container.
+
+| Fixture | Version | Avg max RSS | Runs max RSS (KB) | Listed entries |
+| --- | --- | ---: | --- | ---: |
+| `many.zip` | `v0.2.8` | 50.0 MiB | 52,304, 50,672, 50,648 | 100,000 |
+| `many.zip` | current | 35.7 MiB | 36,368, 36,584, 36,572 | 100,000 |
+| `many.tar` | `v0.2.8` | 147.6 MiB | 151,148, 151,144, 151,200 | 100,000 |
+| `many.tar` | current | 11.1 MiB | 11,328, 11,408, 11,340 | 100,000 |
+
+The TAR fixture shows the biggest drop because the current code streams from the
+archive file path instead of reading the full 98 MiB tar file into memory before
+listing entries. ZIP still needs central-directory metadata, but it no longer
+loads the entire ZIP payload as one byte slice.
+
+## Large Nested ISO Stress Run
+
+The repo now includes `scripts/container-large-iso-stress.sh` to reproduce a
+large nested-payload case. The script generates a synthetic ISO containing a
+SquashFS image with 200,000 files plus nested ZIP, tar.gz, tar.xz, CPIO, RPM,
+gzip, and xz payloads. It then runs both the default non-sudo ISO reader and the
+mounted ISO path in a privileged Debian container with a 1 GiB memory limit.
+
+| Mode | Listed entries | Nested candidates | Elapsed | Max RSS | Verification |
+| --- | ---: | ---: | ---: | ---: | --- |
+| default non-sudo ISO reader | 200,224 | 8 | 0:00.87 | 14,176 KB | passed |
+| `-mount-iso` | 200,224 | 8 | 0:00.88 | 14,176 KB | passed |
+
+Representative verified nested paths:
+
+```text
+images/filesystem.squashfs!bulk/dir0000/file000001.txt
+images/filesystem.squashfs!bulk/dir0199/file200000.txt
+Packages/payload.zip!inner.tgz!nested-tar/deep.txt
+images/bundle.tar.gz!bundle/nested.zip!nested-zip.txt
+images/bundle.tar.xz!xz-bundle/deep-xz.txt
+Packages/direct.cpio!cpio-file.txt
+RPMS/stress.rpm!./opt/lfl-stress/rpm-file.txt
+```
+
+The generated ISO is small because the files compress heavily, but the listing
+work still exercises a mounted/default ISO scan with hundreds of thousands of
+nested filesystem entries and multiple nested archive formats.
+
+Reproduce with:
+
+```sh
+scripts/container-large-iso-stress.sh .container-results/large-iso-stress
+```
+
+Tune the stress size or container memory limit with:
+
+```sh
+LFL_STRESS_FILE_COUNT=300000 LFL_STRESS_MEMORY=2g \
+  scripts/container-large-iso-stress.sh .container-results/large-iso-stress
+```
+
 ## Verification
 
 The ISO checks confirmed that mounted ISO entries and nested archive entries are

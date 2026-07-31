@@ -258,27 +258,5 @@ func expandMountedCandidate(candidate mountedCandidate, opts Options) ([]Entry, 
 }
 
 func expandMountedCandidateTo(candidate mountedCandidate, opts Options, emit EntryFunc) error {
-	head, err := readFilePrefix(candidate.full, 64*1024)
-	if err != nil || !hasArchiveMagic(head) {
-		return nil
-	}
-	data, err := os.ReadFile(candidate.full)
-	if err != nil {
-		return err
-	}
-	return listNestedArchiveBytesTo(candidate.rel, data, nestedDepth(opts), emit)
-}
-
-func readFilePrefix(path string, limit int64) ([]byte, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
-	}
-	defer f.Close()
-	buf := make([]byte, limit)
-	n, err := f.Read(buf)
-	if err != nil && n == 0 {
-		return nil, err
-	}
-	return buf[:n], nil
+	return listArchiveFileTo(candidate.rel, candidate.full, nestedDepth(opts), emit)
 }

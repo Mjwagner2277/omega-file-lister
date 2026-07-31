@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -188,13 +189,28 @@ func expandISOArchiveCandidate(ctx context.Context, isoPath string, candidate is
 }
 
 func expandISOArchiveCandidateTo(ctx context.Context, isoPath string, candidate isoArchiveCandidate, opts Options, emit EntryFunc) error {
-	cmd := exec.CommandContext(ctx, "bsdtar", "-xOf", isoPath, candidate.rel)
-	payload, err := cmd.Output()
+	tmp, err := os.CreateTemp("", "lfl-iso-candidate-*")
 	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName)
+
+	cmd := exec.CommandContext(ctx, "bsdtar", "-xOf", isoPath, candidate.rel)
+	cmd.Stdout = tmp
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		_ = tmp.Close()
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return fmt.Errorf("extract %s from ISO: %w: %s", candidate.rel, err, msg)
+		}
 		return fmt.Errorf("extract %s from ISO: %w", candidate.rel, err)
 	}
-	if !hasArchiveMagic(payload) {
-		return nil
+	if err := tmp.Close(); err != nil {
+		return err
 	}
-	return listNestedArchiveBytesTo(candidate.rel, payload, nestedDepth(opts), emit)
+
+	return listArchiveFileTo(candidate.rel, tmpName, nestedDepth(opts), emit)
 }

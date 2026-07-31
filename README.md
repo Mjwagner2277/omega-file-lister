@@ -118,6 +118,8 @@ lfl: done: 60766 entries from 1 input(s) in 9.5s
 This mode requires `bsdtar`/libarchive to be installed. It is the best default
 for users without mount privileges and for low-RAM systems because entries are
 written as they are discovered instead of being retained as one complete list.
+Nested archive payloads that require seekable input are spooled to temporary
+files instead of being held as one large byte slice.
 
 Use mounted mode only when you explicitly need Linux's mounted filesystem view:
 
@@ -256,7 +258,7 @@ flowchart TD
     E --> F[Stream ISO entries to output]
     F --> G{Supported archive/compressed file?}
     G -- yes --> H[Extract candidate through bsdtar]
-    H --> I[Recursively expand nested contents]
+    H --> I[Spool candidate to temp file and recursively expand]
     I --> J[Stream archive!entry paths]
     G -- no --> F
     D -- yes --> K[Create temporary mount point]
@@ -267,7 +269,7 @@ flowchart TD
     N --> O
     O --> P[Stream mounted file, dir, and link entries]
     O --> Q{Supported archive/compressed file?}
-    Q -- yes --> R[Recursively expand nested contents]
+    Q -- yes --> R[Recursively expand from mounted file path]
     R --> S[Stream archive!entry paths]
     Q -- no --> O
     O --> T{mounted with sudo?}
@@ -315,6 +317,21 @@ A mounted ISO example output is checked in at
 `examples/mounted-small-output.txt`. Current benchmark results are in
 `BENCHMARKS.md`.
 
+## Low-Memory Architecture
+
+`lfl` streams entries to the output writer. The CLI uses that streaming path, so
+it does not build a complete in-memory list before writing `<input_name>_files`.
+For nested archive data, file-backed recursion is used whenever possible:
+
+- top-level archives are read from their file path instead of `os.ReadFile`
+- mounted ISO nested candidates expand directly from the mounted file path
+- default non-sudo ISO candidates are extracted to a temporary spill file
+- ZIP, TAR, CPIO, RPM, SquashFS, XZ, and Zstd recursion avoids full payload
+  `ReadAll` buffers in normal listing paths
+
+The compatibility `List` API still returns `[]Entry`, so callers that need low
+memory behavior should use `ListTo` or the CLI.
+
 ## Linux Container Mount Test
 
 For testing ISO mounting from macOS or another non-Linux host, use Docker with a
@@ -335,3 +352,23 @@ cp /input_iso_files /out/input_iso_files
 This container must be privileged because Linux loop mounts require mount
 capabilities. Only run it with ISO files and output directories you intend to
 expose to the container.
+
+## Large ISO Stress Test
+
+To generate and test a large nested ISO fixture in Docker, run:
+
+```sh
+scripts/container-large-iso-stress.sh .container-results/large-iso-stress
+```
+
+The default stress fixture creates 200,000 files inside a nested SquashFS image
+and also verifies nested ZIP, tar.gz, tar.xz, CPIO, RPM, gzip, and xz payloads.
+It records line counts, GNU `time -v` output, max RSS, and representative nested
+path checks under the output directory.
+
+Adjust the fixture size or container memory limit with:
+
+```sh
+LFL_STRESS_FILE_COUNT=300000 LFL_STRESS_MEMORY=2g \
+  scripts/container-large-iso-stress.sh .container-results/large-iso-stress
+```

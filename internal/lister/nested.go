@@ -73,6 +73,141 @@ func listNestedArchiveBytesTo(parent string, data []byte, depth int, emit EntryF
 	return listArchivePayloadTo(parent, data, depth, emit)
 }
 
+// listArchiveFileTo is the low-memory recursive path for archive payloads
+// that already exist as files. It lets large nested ISO/package payloads spill
+// to disk instead of forcing them into a single heap allocation.
+func listArchiveFileTo(parent, path string, depth int, emit EntryFunc) error {
+	if depth <= 0 {
+		return nil
+	}
+	head, err := readFilePrefix(path, 64*1024)
+	if err != nil {
+		return err
+	}
+	if !hasArchiveMagic(head) {
+		return nil
+	}
+
+	switch {
+	case isZip(head):
+		return listZipFileTo(parent, path, depth, emit)
+	case isGzip(head):
+		return listCompressedFileTo(parent, path, depth, "gzip", emit, func(r io.Reader) (io.Reader, error) {
+			return gzip.NewReader(r)
+		})
+	case isBzip2(head):
+		return listCompressedFileTo(parent, path, depth, "bzip2", emit, func(r io.Reader) (io.Reader, error) {
+			return bzip2.NewReader(r), nil
+		})
+	case isXZ(head):
+		return listExternalCompressedFileTo(parent, path, depth, "xz", emit, "xz", "-dc")
+	case isZstd(head):
+		return listExternalCompressedFileTo(parent, path, depth, "zstd", emit, "zstd", "-dc")
+	case isSquashFS(head):
+		return listSquashFSFileTo(parent, path, emit)
+	case isRPM(head):
+		return listRPMFileTo(parent, path, depth, emit)
+	case isTar(head):
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return listTarPayloadTo(parent, tar.NewReader(f), depth, "tar", emit)
+	case isCPIONewc(head):
+		f, err := os.Open(path)
+		if err != nil {
+			return err
+		}
+		defer f.Close()
+		return listCPIOPayloadTo(parent, f, depth, "cpio", emit)
+	default:
+		return nil
+	}
+}
+
+func listCompressedFileTo(parent, path string, depth int, format string, emit EntryFunc, open func(io.Reader) (io.Reader, error)) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	cr, err := open(f)
+	if err != nil {
+		return err
+	}
+	if closer, ok := cr.(io.Closer); ok {
+		defer closer.Close()
+	}
+	return listCompressedStreamTo(parent, cr, depth, format, emit)
+}
+
+func listCompressedStreamTo(parent string, r io.Reader, depth int, format string, emit EntryFunc) error {
+	br := bufio.NewReader(r)
+	peek, _ := br.Peek(512)
+
+	if isTar(peek) {
+		return listTarPayloadTo(parent, tar.NewReader(br), depth, format+".tar", emit)
+	}
+	if isCPIONewc(peek) {
+		return listCPIOPayloadTo(parent, br, depth, format+".cpio", emit)
+	}
+
+	childPath := nestedPath(parent, "content")
+	if hasArchiveMagic(peek) {
+		tmpName, size, cleanup, err := copyStreamToTemp(br, "lfl-compressed-*")
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		if err := emit(Entry{Path: childPath, Type: "file", Size: size, Format: format, Comment: compressedComment(parent, format)}); err != nil {
+			return err
+		}
+		return listArchiveFileTo(childPath, tmpName, depth-1, emit)
+	}
+
+	size, err := io.Copy(io.Discard, br)
+	if err != nil {
+		return err
+	}
+	return emit(Entry{Path: childPath, Type: "file", Size: size, Format: format, Comment: compressedComment(parent, format)})
+}
+
+func listExternalCompressedFileTo(parent, path string, depth int, format string, emit EntryFunc, argv ...string) error {
+	if len(argv) == 0 {
+		return nil
+	}
+	if _, err := exec.LookPath(argv[0]); err != nil {
+		return emit(Entry{Path: nestedPath(parent, "content"), Type: "file", Format: format, Comment: "compressed stream; helper not installed for recursive expansion"})
+	}
+	args := append([]string{}, argv[1:]...)
+	args = append(args, path)
+	cmd := exec.Command(argv[0], args...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	listErr := listCompressedStreamTo(parent, stdout, depth, format, emit)
+	if listErr != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return listErr
+	}
+	if err := cmd.Wait(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return fmt.Errorf("decompress %s: %w: %s", format, err, msg)
+		}
+		return fmt.Errorf("decompress %s: %w", format, err)
+	}
+	return nil
+}
+
 // listArchivePayloadTo is the central recursive dispatcher for supported payloads.
 func listArchivePayloadTo(parent string, data []byte, depth int, emit EntryFunc) error {
 	if depth <= 0 || len(data) == 0 {
@@ -158,17 +293,60 @@ func listZipPayloadTo(parent string, data []byte, depth int, emit EntryFunc) err
 		if err != nil {
 			return err
 		}
-		payload, readErr := io.ReadAll(rc)
+		tmpName, _, cleanup, readErr := copyStreamToTemp(rc, "lfl-zip-entry-*")
 		closeErr := rc.Close()
 		if readErr != nil {
 			return readErr
 		}
 		if closeErr != nil {
+			cleanup()
 			return closeErr
 		}
-		if err := listArchivePayloadTo(childPath, payload, depth-1, emit); err != nil {
+		if err := listArchiveFileTo(childPath, tmpName, depth-1, emit); err != nil {
+			cleanup()
 			return err
 		}
+		cleanup()
+	}
+	return nil
+}
+
+func listZipFileTo(parent, path string, depth int, emit EntryFunc) error {
+	zr, err := zip.OpenReader(path)
+	if err != nil {
+		return err
+	}
+	defer zr.Close()
+	for _, f := range zr.File {
+		typ := "file"
+		if f.FileInfo().IsDir() {
+			typ = "dir"
+		}
+		childPath := nestedPath(parent, f.Name)
+		if err := emit(Entry{Path: childPath, Type: typ, Size: int64(f.UncompressedSize64), Format: "zip", Comment: archiveComment(parent, "zip")}); err != nil {
+			return err
+		}
+		if typ != "file" || !hasArchiveSuffix(f.Name) {
+			continue
+		}
+		rc, err := f.Open()
+		if err != nil {
+			return err
+		}
+		tmpName, _, cleanup, readErr := copyStreamToTemp(rc, "lfl-zip-entry-*")
+		closeErr := rc.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			cleanup()
+			return closeErr
+		}
+		if err := listArchiveFileTo(childPath, tmpName, depth-1, emit); err != nil {
+			cleanup()
+			return err
+		}
+		cleanup()
 	}
 	return nil
 }
@@ -213,13 +391,15 @@ func listTarPayloadTo(parent string, tr *tar.Reader, depth int, format string, e
 		if typ != "file" || !hasArchiveSuffix(name) {
 			continue
 		}
-		payload, err := io.ReadAll(tr)
+		tmpName, _, cleanup, err := copyStreamToTemp(tr, "lfl-tar-entry-*")
 		if err != nil {
 			return err
 		}
-		if err := listArchivePayloadTo(childPath, payload, depth-1, emit); err != nil {
+		if err := listArchiveFileTo(childPath, tmpName, depth-1, emit); err != nil {
+			cleanup()
 			return err
 		}
+		cleanup()
 	}
 	return nil
 }
@@ -242,33 +422,10 @@ func listCompressedPayloadTo(parent string, data []byte, depth int, format strin
 	if err != nil {
 		return err
 	}
-	br := bufio.NewReader(cr)
-	peek, _ := br.Peek(512)
-
-	if isTar(peek) {
-		return listTarPayloadTo(parent, tar.NewReader(br), depth, format+".tar", emit)
+	if closer, ok := cr.(io.Closer); ok {
+		defer closer.Close()
 	}
-	if isCPIONewc(peek) {
-		return listCPIOPayloadTo(parent, br, depth, format+".cpio", emit)
-	}
-
-	childPath := nestedPath(parent, "content")
-	if hasArchiveMagic(peek) {
-		payload, err := io.ReadAll(br)
-		if err != nil {
-			return err
-		}
-		if err := emit(Entry{Path: childPath, Type: "file", Size: int64(len(payload)), Format: format, Comment: compressedComment(parent, format)}); err != nil {
-			return err
-		}
-		return listArchivePayloadTo(childPath, payload, depth-1, emit)
-	}
-
-	size, err := io.Copy(io.Discard, br)
-	if err != nil {
-		return err
-	}
-	return emit(Entry{Path: childPath, Type: "file", Size: size, Format: format, Comment: compressedComment(parent, format)})
+	return listCompressedStreamTo(parent, cr, depth, format, emit)
 }
 
 func listCPIOPayload(parent string, r io.Reader, depth int, format string) ([]Entry, error) {
@@ -330,13 +487,15 @@ func listCPIOPayloadTo(parent string, r io.Reader, depth int, format string, emi
 			}
 		}
 		if typ == "file" && hasArchiveSuffix(name) && depth > 0 {
-			payload := make([]byte, size)
-			if _, err := io.ReadFull(r, payload); err != nil {
+			tmpName, cleanup, err := copyNToTemp(r, int64(size), "lfl-cpio-entry-*")
+			if err != nil {
 				return err
 			}
-			if err := listArchivePayloadTo(childPath, payload, depth-1, emit); err != nil {
+			if err := listArchiveFileTo(childPath, tmpName, depth-1, emit); err != nil {
+				cleanup()
 				return err
 			}
+			cleanup()
 		} else if _, err := io.CopyN(io.Discard, r, int64(size)); err != nil {
 			return err
 		}
@@ -361,9 +520,6 @@ func listSquashFSPayload(parent string, data []byte) ([]Entry, error) {
 }
 
 func listSquashFSPayloadTo(parent string, data []byte, emit EntryFunc) error {
-	if _, err := exec.LookPath("unsquashfs"); err != nil {
-		return emit(Entry{Path: nestedPath(parent, "content"), Type: "file", Format: "squashfs", Comment: "SquashFS image; install unsquashfs for recursive expansion"})
-	}
 	tmp, err := os.CreateTemp("", "lfl-squashfs-*")
 	if err != nil {
 		return err
@@ -377,8 +533,14 @@ func listSquashFSPayloadTo(parent string, data []byte, emit EntryFunc) error {
 	if err := tmp.Close(); err != nil {
 		return err
 	}
+	return listSquashFSFileTo(parent, name, emit)
+}
 
-	cmd := exec.Command("unsquashfs", "-ll", name)
+func listSquashFSFileTo(parent, path string, emit EntryFunc) error {
+	if _, err := exec.LookPath("unsquashfs"); err != nil {
+		return emit(Entry{Path: nestedPath(parent, "content"), Type: "file", Format: "squashfs", Comment: "SquashFS image; install unsquashfs for recursive expansion"})
+	}
+	cmd := exec.Command("unsquashfs", "-ll", path)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -396,11 +558,13 @@ func listSquashFSPayloadTo(parent string, data []byte, emit EntryFunc) error {
 			continue
 		}
 		if err := emit(entry); err != nil {
+			_ = cmd.Process.Kill()
 			_ = cmd.Wait()
 			return err
 		}
 	}
 	if err := scanner.Err(); err != nil {
+		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 		return err
 	}
@@ -455,15 +619,85 @@ func listExternalCompressedPayloadTo(parent string, data []byte, depth int, form
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin = bytes.NewReader(data)
-	payload, err := cmd.Output()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
 	}
-	childPath := nestedPath(parent, "content")
-	if hasArchiveMagic(payload) {
-		return listArchivePayloadTo(parent, payload, depth, emit)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
 	}
-	return emit(Entry{Path: childPath, Type: "file", Size: int64(len(payload)), Format: format, Comment: compressedComment(parent, format)})
+	listErr := listCompressedStreamTo(parent, stdout, depth, format, emit)
+	if listErr != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return listErr
+	}
+	if err := cmd.Wait(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return fmt.Errorf("decompress %s: %w: %s", format, err, msg)
+		}
+		return fmt.Errorf("decompress %s: %w", format, err)
+	}
+	return nil
+}
+
+func readFilePrefix(path string, limit int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	buf := make([]byte, limit)
+	n, err := f.Read(buf)
+	if err != nil && err != io.EOF {
+		return nil, err
+	}
+	return buf[:n], nil
+}
+
+// copyStreamToTemp creates a seekable spill file for archive formats like ZIP,
+// RPM, and SquashFS whose parsers cannot operate on a forward-only stream.
+func copyStreamToTemp(r io.Reader, pattern string) (string, int64, func(), error) {
+	tmp, err := os.CreateTemp("", pattern)
+	if err != nil {
+		return "", 0, nil, err
+	}
+	name := tmp.Name()
+	cleanup := func() { _ = os.Remove(name) }
+	size, copyErr := io.Copy(tmp, r)
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		cleanup()
+		return "", 0, nil, copyErr
+	}
+	if closeErr != nil {
+		cleanup()
+		return "", 0, nil, closeErr
+	}
+	return name, size, cleanup, nil
+}
+
+func copyNToTemp(r io.Reader, size int64, pattern string) (string, func(), error) {
+	tmp, err := os.CreateTemp("", pattern)
+	if err != nil {
+		return "", nil, err
+	}
+	name := tmp.Name()
+	cleanup := func() { _ = os.Remove(name) }
+	_, copyErr := io.CopyN(tmp, r, size)
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		cleanup()
+		return "", nil, copyErr
+	}
+	if closeErr != nil {
+		cleanup()
+		return "", nil, closeErr
+	}
+	return name, cleanup, nil
 }
 
 func prefixArchiveEntries(parent string, entries []Entry, format string) []Entry {

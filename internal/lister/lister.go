@@ -109,14 +109,9 @@ func ListTo(ctx context.Context, path string, opts Options, emit EntryFunc) erro
 		return emitEntries(entries, emit)
 	}
 	if isZip(head) || isGzip(head) || isBzip2(head) || isXZ(head) || isZstd(head) || isSquashFS(head) || isTar(head) || isCPIONewc(head) {
-		reportProgress(opts, ProgressEvent{Stage: "read", Path: path, Message: "reading archive into memory"})
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		reportProgress(opts, ProgressEvent{Stage: "expand", Path: path, Message: "expanding archive entries"})
+		reportProgress(opts, ProgressEvent{Stage: "expand", Path: path, Message: "streaming and expanding archive entries"})
 		count := 0
-		err = listArchiveBytesTo(data, nestedDepth(opts), func(entry Entry) error {
+		err = listArchiveFileTo("", path, nestedDepth(opts), func(entry Entry) error {
 			count++
 			return emit(entry)
 		})
@@ -128,11 +123,7 @@ func ListTo(ctx context.Context, path string, opts Options, emit EntryFunc) erro
 	}
 
 	reportProgress(opts, ProgressEvent{Stage: "fallback", Path: path, Message: "trying external listing helpers"})
-	entries, err := listWithFallback(ctx, path)
-	if err != nil {
-		return err
-	}
-	return emitEntries(entries, emit)
+	return listWithFallbackTo(ctx, path, emit)
 }
 
 func emitEntries(entries []Entry, emit EntryFunc) error {
@@ -167,6 +158,19 @@ func listCompressedTarOrSingle(r io.Reader, format string, open func(io.Reader) 
 }
 
 func listWithFallback(ctx context.Context, path string) ([]Entry, error) {
+	var entries []Entry
+	err := listWithFallbackTo(ctx, path, func(entry Entry) error {
+		entries = append(entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sortEntries(entries)
+	return entries, nil
+}
+
+func listWithFallbackTo(ctx context.Context, path string, emit EntryFunc) error {
 	candidates := [][]string{
 		{"bsdtar", "-tf", path},
 		{"tar", "-tf", path},
@@ -174,51 +178,77 @@ func listWithFallback(ctx context.Context, path string) ([]Entry, error) {
 		{"unrar", "lb", path},
 	}
 	var errs []error
-	for _, cmd := range candidates {
-		entries, err := runListCommand(ctx, cmd)
-		if err == nil {
-			return entries, nil
+	for _, argv := range candidates {
+		if err := runListCommandTo(ctx, argv, emit); err == nil {
+			return nil
+		} else {
+			errs = append(errs, err)
 		}
-		errs = append(errs, err)
 	}
-	return nil, fmt.Errorf("unsupported format or missing helper tools: %w", errors.Join(errs...))
+	return fmt.Errorf("unsupported format or missing helper tools: %w", errors.Join(errs...))
 }
 
 func runListCommand(ctx context.Context, argv []string) ([]Entry, error) {
-	if _, err := exec.LookPath(argv[0]); err != nil {
-		return nil, err
-	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	out, err := cmd.Output()
+	var entries []Entry
+	err := runListCommandTo(ctx, argv, func(entry Entry) error {
+		entries = append(entries, entry)
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	var entries []Entry
-	if argv[0] == "7z" {
-		for _, block := range strings.Split(string(out), "\n\n") {
-			for _, line := range strings.Split(block, "\n") {
-				if strings.HasPrefix(line, "Path = ") {
-					p := strings.TrimPrefix(line, "Path = ")
-					if p != "" && p != "." {
-						entries = append(entries, Entry{Path: p, Type: "file", Format: "external/7z"})
-					}
-				}
-			}
-		}
-	} else {
-		scanner := bufio.NewScanner(bytes.NewReader(out))
-		for scanner.Scan() {
-			p := strings.TrimSpace(scanner.Text())
-			if p != "" {
-				entries = append(entries, Entry{Path: p, Type: "file", Format: "external/" + argv[0]})
-			}
-		}
-		if err := scanner.Err(); err != nil {
-			return nil, err
-		}
-	}
 	sortEntries(entries)
 	return entries, nil
+}
+
+func runListCommandTo(ctx context.Context, argv []string, emit EntryFunc) error {
+	if _, err := exec.LookPath(argv[0]); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	scanner := bufio.NewScanner(stdout)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	format := "external/" + argv[0]
+	for scanner.Scan() {
+		line := scanner.Text()
+		if argv[0] == "7z" {
+			if !strings.HasPrefix(line, "Path = ") {
+				continue
+			}
+			line = strings.TrimPrefix(line, "Path = ")
+		}
+		p := strings.TrimSpace(line)
+		if p == "" || p == "." {
+			continue
+		}
+		if err := emit(Entry{Path: p, Type: "file", Format: format}); err != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return err
+	}
+	if err := cmd.Wait(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if msg != "" {
+			return fmt.Errorf("%s: %w: %s", strings.Join(argv, " "), err, msg)
+		}
+		return err
+	}
+	return nil
 }
 
 func sortEntries(entries []Entry) {
